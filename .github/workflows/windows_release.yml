@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*' # 當你推送到標籤如 v1.1.0 時觸發
 
+permissions:
+  contents: write # 允許建立 Release 並上傳檔案
+
 jobs:
   build:
     runs-on: windows-latest
