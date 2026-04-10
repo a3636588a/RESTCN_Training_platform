@@ -45,10 +45,10 @@ class TrainCfg:
     
     # CNN Params
     batch_size: int = 32
-    epochs: int = 50
+    epochs: int = 200
     learning_rate: float = 0.001
-    early_stop_patience: int = 8
-    lr_patience: int = 4
+    early_stop_patience: int = 15
+    lr_patience: int = 10
     
     # Metadata
     out_model_path: str = "gesture_model_cnn_v1.h5" # Keras format

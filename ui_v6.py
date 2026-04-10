@@ -1926,7 +1926,7 @@ class MainWindow(QMainWindow):
         # CNN Specific
         self.spin_cnn_epochs = NoWheelSpinBox()
         self.spin_cnn_epochs.setRange(1, 100000)
-        self.spin_cnn_epochs.setValue(50)
+        self.spin_cnn_epochs.setValue(200)
         self.f_model.addRow("epochs (倫次):", self.spin_cnn_epochs)
 
         self.spin_batch_size = NoWheelSpinBox()
@@ -1943,12 +1943,12 @@ class MainWindow(QMainWindow):
         # Patience params
         self.spin_early_stop_patience = NoWheelSpinBox()
         self.spin_early_stop_patience.setRange(1, 100)
-        self.spin_early_stop_patience.setValue(8)
+        self.spin_early_stop_patience.setValue(15)
         self.f_model.addRow("EarlyStop Patience (次數):", self.spin_early_stop_patience)
 
         self.spin_lr_patience = NoWheelSpinBox()
         self.spin_lr_patience.setRange(1, 100)
-        self.spin_lr_patience.setValue(4)
+        self.spin_lr_patience.setValue(10)
         self.f_model.addRow("ReduceLR Patience (次數):", self.spin_lr_patience)
 
         layout.addWidget(self.g_model)
