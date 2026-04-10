@@ -1,4 +1,0 @@
-sil_all/mlp_lib/mlp_features_lib.o: ../sil_all/mlp_lib/mlp_features_lib.c \
- ../sil_all/mlp_lib/mlp_features_lib.h ../sil_all/mlp_lib/mlp_model.h
-../sil_all/mlp_lib/mlp_features_lib.h:
-../sil_all/mlp_lib/mlp_model.h:
