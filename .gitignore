@@ -30,7 +30,6 @@ MANIFEST
 #  Usually these files are written by a python script, and contain the binary number of 
 #  the python-version, and the platform.Name for the build.
 *.manifest
-*.spec
 
 # Installer logs
 pip-log.txt
