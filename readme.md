@@ -73,33 +73,36 @@ graph TD
 
 此頁面用於配置特徵提取參數、數據增強以及模型訓練超參數。
 
-![Gesture Trainer + Detector UI](/Users/USE/.gemini/antigravity/brain/608ef8c8-125d-4e95-878d-3aec8f7b01fa/media__1775788206522.png)
+### 2.1 資料掃描與標籤定義
+![Train Data Settings](./photo/螢幕擷取畫面%202026-04-10%20105041.png)
+*   **Data Source**: 指定 CSV 資料夾並進行自動掃描。
+*   **Label Definitions**: 定義 CSV 檔案名稱前綴與對應的手勢 ID。
 
-### 2.1 關鍵配置區塊
-*   **Features (特徵)**:
-    *   `channels`: 選擇要參與訓練的感測器通道。
-    *   `window_len`: 歷史參考幀數。
-    *   `slope_factor`: 斜率放大倍率。
-*   **Augmentation (數據增強)**:
-    *   包含 `delta_gain`、`span_gain`、`time_warp` 等功能，用於提升模型在不同感測器誤差下的魯棒性。
-*   **Model (CNN)**:
-    *   設置 `Epochs` (訓練輪次)、`Batch Size`、`Learning Rate` 等超參數。
+### 2.2 特徵與數據增強
+![Train Features & Augmentation](./photo/螢幕擷取畫面%202026-04-10%20105056.png)
+*   **Features**: 選擇參與訓練的通道，設定 `window_len` 與關鍵的 `slope_factor`。
+*   **Augmentation**: 提供 `delta_gain`、`time_warp` 等多種增強手段，確保模型能適應不同的環境細微變化。
+
+### 2.3 模型訓練與導出
+![Train Model Settings](./photo/螢幕擷取畫面%202026-04-10%20105105.png)
+*   設定訓練輪次 (Epochs)、學習率 (Learning Rate) 等超參數。
+*   訓練完成後可直接點擊 **View Training Report** 查看模型成效。
+
+### 2.4 訓練報告範例
+![Training Report](./photo/training_report.png)
+*   包含 Loss/Accuracy 曲線，幫助分析模型是否過擬合 (Overfitting)。
 
 ---
 
 ## 3. 即時偵測與調校 (Detect Tab)
 
+![Detect UI](./photo/螢幕擷取畫面%202026-04-10%20105121.png)
+
 此頁面用於透過 Serial 連接 MCU 並即時測試模型效果。**這裡設定的參數可以直接在 UI 測試，滿意後再寫入 MCU。**
 
-*   **Smoothing Alpha (0.01 ~ 1.0)**:
-    *   低值 (0.1 ~ 0.3): 極度平滑，穩定度高，但反應慢（有延遲感）。
-    *   高值 (0.5 ~ 0.8): 響應極快，但原始數據抖動時 UI 可能會閃爍。
-*   **Switching Margin (0.0 ~ 1.0)**:
-    *   切換門檻。當「新手勢的信心度」必須贏過「舊手勢」這麼多時，才會發生切換。防止在兩個信號接近時頻繁跳動。
-*   **Latch Exit Thresh**:
-    *   退出門檻。當前手勢的信心度低於此值時，系統會強制回歸到靜態 (如：convert) 狀態。
-*   **Inference Stride**:
-    *   跳幀頻率。例如設置為 6，表示每 6 次採樣執行一次 CNN 推理。這能大幅降低 MCU CPU 負擔，並維持 100Hz 的數據傳輸頻率。
+*   **Smoothing Alpha**: EWMA 平滑係數，平衡延遲感與穩定度。
+*   **Slope Factor**: 同訓練設定，用於放大呼吸信號的動態趨勢。
+*   **Tier Definitions**: 全域預設的驗證等級（Fast/Normal/Strict），根據不同手勢需求選擇。
 
 ---
 
@@ -107,39 +110,39 @@ graph TD
 
 當測試滿意後，使用此頁面產生工業級的 C 函式庫 (`cnn_lib`)。
 
-### 4.1 關鍵參數定義
-*   **Slope Factor (斜率放大係數)**: 
-    *   設定在 `cnn_features_lib.h` 中的 `CNN_SLOPE_FACTOR`。
-    *   數值越高，對於緩慢變化的呼吸信號（如呼氣）越靈敏。
-*   **Tier Definitions (階層式驗證)**:
-    *   **Fast (快速層級)**: 追求最短延遲 (Stable Count = 0)。
-    *   **Normal (標準層級)**: 平衡穩定與速度，適合大多數手勢。
-    *   **Strict (嚴格層級)**: 針對容易誤判的複雜動作，強制要求更多的連續穩定幀數。
+### 4.1 核心參數寫入
+![Gencode Settings](./photo/螢幕擷取畫面%202026-04-10%20105131.png)
+*   確保韌體端的 `CNN_SLOPE_FACTOR` 與 `CNN_INFER_STRIDE` 與 UI 設定一致。
 
-### 4.2 產生的檔案清單
-1.  `cnn_detect.c/h`: CNN 推理引擎核心。
-2.  `cnn_features_lib.c/h`: 特徵提取與斜率放大邏輯。
-3.  `cnn_postprocess.c/h`: 包含 Alpha 平滑與 Tier 驗證的後處理邏輯。
-4.  `cnn_weights.h`: 自動將 Keras 模型轉換後的靜態權重。
-5.  `cnn_model_data.c/h`: 儲存感測器 Baseline 與 Holdavg 設定。
+### 4.2 手勢 Tier 詳細表
+![Gencode Tier Table](./photo/螢幕擷取畫面%202026-04-10%20105148.png)
+*   針對每個特定手勢分配對應的驗證層級（例如：呼吸動作設為 Fast，靜止動作設為 Strict）。
 
 ---
 
-## 5. MCU 整合指南
+## 5. 自動化部署 (Auto Build Tab)
+
+![Auto Build UI](./photo/螢幕擷取畫面%202026-04-10%20105202.png)
+*   此模組整合了 FSP (Flexible Software Package) 的命令行工具，實現一鍵自動編譯並下載韌體至 RA6M5 開發板。
+
+---
+
+## 6. MCU 整合指南
 
 產生的 `cnn_lib` 放置於韌體目錄後，主要連動點位於 `sil_app_glove_ml.c`:
 
-1.  **初始化**:
-    ```c
-    cnn_feat_init(&ctx, CNN_WIN_LEN, CNN_INFER_STRIDE, CNN_SLOPE_FACTOR);
-    cnn_detect_init();
-    cnn_post_init(&post_ctx);
-    ```
-2.  **主迴圈處理**:
-    1.  讀取感測器 Raw 數據。
-    2.  呼叫 `cnn_compute_features` 以 Level+Slope 格式填充。
-    3.  若返回 `true`（達成 Stride 條件），呼叫 `cnn_detect_predict` 獲取原始機率。
-    4.  呼叫 `cnn_post_update` 進行平滑與階層檢查，最終獲取穩定手勢 ID。
+```c
+// 1. 初始化
+cnn_feat_init(&ctx, CNN_WIN_LEN, CNN_INFER_STRIDE, CNN_SLOPE_FACTOR);
+cnn_detect_init();
+cnn_post_init(&post_ctx);
+
+// 2. 特徵計算與推理
+if (cnn_compute_features(&ctx, row_u16, base_u16, holdavg_u16, ...)) {
+    cnn_detect_predict(waveform, features, probas);
+    int final_id = cnn_post_update(&post_ctx, probas);
+}
+```
 
 ---
 
@@ -150,4 +153,4 @@ graph TD
 *   **Q: 手勢辨識後一直卡著變不回來？**
     *   A: 調大 `Switching Margin` (例如 0.45) 並調高 `Latch Exit Thresh` (例如 0.30)。
 *   **Q: MCU 頻率掉到 30Hz 以下？**
-    *   A: 檢查 `Inference Stride`。設置為 6 到 10 之間能有效分配 CPU 資源，恢復到 100Hz 輸出。
+    *   A: 檢查 `Inference Stride`。設置為 6 到 10 之間能有效分配 CPU 資源。
