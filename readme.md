@@ -18,17 +18,72 @@
 ```mermaid
 graph TD
     subgraph Inputs
-        W[Waveform Input]
+        W[Waveform Input: Level + Slope]
         V[Variance Input]
         M[Mean Input]
     end
-    W --> C1[Conv1D + SE Block 1]
-    C1 --> C2[Conv1D_1 + SE Block 2]
-    C2 --> Cat[Feature Fusion]
+
+    subgraph "Block 1: Local Feature Extraction"
+        C1[Conv1D: 32 Filters]
+        BN1[Batch Normalization]
+        L1[LeakyReLU]
+        subgraph "SE-Block 1 (Attention)"
+            SQ1[Squeeze: GAP]
+            EX1[Excitation: Dense/Sigmoid]
+        end
+        P1[MaxPooling]
+    end
+
+    subgraph "Block 2: Hierarchical Feature Extraction"
+        C2[Conv1D: 64 Filters]
+        BN2[Batch Normalization]
+        L2[LeakyReLU]
+        subgraph "SE-Block 2 (Attention)"
+            SQ2[Squeeze: GAP]
+            EX2[Excitation: Dense/Sigmoid]
+        end
+        P2[MaxPooling]
+    end
+
+    subgraph "Pooling & Fusion"
+        GAP[Global Average Pooling]
+        GMP[Global Max Pooling]
+        Cat[Feature Concatenation]
+    end
+
+    subgraph "Classification Head"
+        D1[Dense: 128]
+        D2[Dense: 64]
+        Out[Softmax Output: 16 Classes]
+    end
+
+    W --> C1 --> BN1 --> L1 --> SQ1 --> EX1 --> P1
+    P1 --> C2 --> BN2 --> L2 --> SQ2 --> EX2 --> P2
+    
+    P2 --> GAP
+    P2 --> GMP
+    
+    GAP --> Cat
+    GMP --> Cat
     V --> Cat
     M --> Cat
-    Cat --> Out[Softmax Output]
+    
+    Cat --> D1 --> D2 --> Out
 ```
+
+#### 逐層詳細技術解析
+*   **輸入處理 (Dual-Source Input)**：同時接收 55 幀的歸一化數值（Level）與一階導數（Slope），讓模型能同時感知數據的「位準」與「趨勢」。另外注入變異數（Variance）與平均值（Mean）作為統計背景，協助區分動作與靜態漂移。
+*   **一維卷積塊 (Conv1D + BN + LeakyReLU)**：
+    *   **卷積層**：運用濾波器掃描時序特徵，尋找吸氣波峰或突然動作的模式。
+    *   **批量歸一化 (BN)**：穩定數據特徵，適應不同使用者的訊號幅值差異。
+    *   **LeakyReLU**：非線性激活函數，允許微小梯度通過，對波動性的呼吸訊號極其重要。
+*   **通道注意力機制 (SE-Block)**：
+    *   這是架構的核心。透過 Squeeze (壓縮) 與 Excitation (激發) 邏輯，模型會自動學習「當前哪個感測通道最重要」。例如，若胸部感測器訊號優於腹部，模型會動態放大該通道權重，提升抗干擾能力。
+*   **全域特徵融合 (Pooling & Fusion)**：
+    *   使用 GAP (平均池化) 捕捉整體能量，GMP (最大池化) 捕捉最強瞬間。
+    *   最後將 CNN 提取的「時序特徵」與傳統的「統計特徵」拼接，確保決策既有深度模式也有統計依據。
+*   **分類決策頭 (Dense + Softmax)**：
+    *   兩層全連接層執行高層級邏輯推理，最後透過 Softmax 輸出 16 個類別的機率分布，實現高信心的手勢判定。
 
 ---
 
