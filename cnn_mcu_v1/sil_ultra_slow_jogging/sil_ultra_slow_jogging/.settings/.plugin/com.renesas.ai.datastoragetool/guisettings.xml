@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<settings>
+            
+    
+    <Main>
+                        
+        
+        <item key="InstanceId">0</item>
+                    
+        
+        <item key="FixedScaleViewScaleMax">127</item>
+            
+        <item key="FixedScaleViewScaleMin">-128</item>
+    </Main>
+        
+
+</settings>

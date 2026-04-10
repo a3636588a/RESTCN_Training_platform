@@ -1,0 +1,25 @@
+# Data and local folders
+newdata/
+plk/
+呼吸/
+__pycache__/
+
+# Model and metadata files (usually excluded from git)
+*.keras
+*.h5
+*.pkl
+*.tflite
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Build files
+.metadata/
+Debug/
+Release/
+ipch/
+*.sdf
+*.suo
+*.user
+*.orig

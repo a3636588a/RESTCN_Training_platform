@@ -1,0 +1,43 @@
+Extracting support files...
+10:14:48 **** 项目sil_ultra_slow_jogging配置Debug的增量构建 ****
+make -r -j12 all 
+Building file: ../sil_all/cnn_lib/cnn_postprocess.c
+Building file: ../sil_all/app/sil_app_glove_ml.c
+In file included from C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/arm_math.h:35,
+                 from C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra_gen/common_data.h:6,
+                 from C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra_gen/hal_data.h:6,
+                 from ../sil_all/app/..\globals\sil_globals.h:4,
+                 from ../sil_all/app/sil_app_glove_ml.h:4,
+                 from ../sil_all/app/sil_app_glove_ml.c:1:
+C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/dsp/utils.h: In function 'arm_norm_64_to_32u':
+C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/dsp/utils.h:189:27: warning: conversion to 'int32_t' {aka 'long int'} from 'long unsigned int' may change the sign of the result [-Wsign-conversion]
+  189 |             *normalized = (((uint32_t) lo) >> 1);
+      |                           ^
+In file included from C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/arm_math.h:43:
+C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/dsp/controller_functions.h: In function 'arm_pid_q15':
+C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/dsp/controller_functions.h:382:27: warning: conversion to 'int16x2_t' {aka 'long int'} from 'long unsigned int' may change the sign of the result [-Wsign-conversion]
+  382 |     acc = (q63_t)__SMLALD((uint32_t)S->A1, (uint32_t)read_q15x2 (S->state), (uint64_t)acc);
+      |                           ^~~~~~~~~~~~~~~
+C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/dsp/controller_functions.h:382:44: warning: conversion to 'int16x2_t' {aka 'long int'} from 'long unsigned int' may change the sign of the result [-Wsign-conversion]
+  382 |     acc = (q63_t)__SMLALD((uint32_t)S->A1, (uint32_t)read_q15x2 (S->state), (uint64_t)acc);
+      |                                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+C:/Users/USE/Desktop/SEAN_CODE/CNN_station_breathe/cnn_mcu_v1/sil_ultra_slow_jogging/sil_ultra_slow_jogging/ra/arm/CMSIS-DSP/Include/dsp/controller_functions.h:382:77: warning: conversion to 'int64_t' {aka 'long long int'} from 'long long unsigned int' may change the sign of the result [-Wsign-conversion]
+  382 |     acc = (q63_t)__SMLALD((uint32_t)S->A1, (uint32_t)read_q15x2 (S->state), (uint64_t)acc);
+      |                                                                             ^~~~~~~~~~~~~
+Building target: sil_ultra_slow_jogging.elf
+d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/thumb/v8-m.main+fp/hard\libg_nano.a(libc_a-closer.o): in function `_close_r':
+closer.c:(.text._close_r+0xc): warning: _close is not implemented and will always fail
+d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/thumb/v8-m.main+fp/hard\libg_nano.a(libc_a-signalr.o): in function `_getpid_r':
+signalr.c:(.text._getpid_r+0x0): warning: _getpid is not implemented and will always fail
+d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/thumb/v8-m.main+fp/hard\libg_nano.a(libc_a-signalr.o): in function `_kill_r':
+signalr.c:(.text._kill_r+0xe): warning: _kill is not implemented and will always fail
+d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/thumb/v8-m.main+fp/hard\libg_nano.a(libc_a-lseekr.o): in function `_lseek_r':
+lseekr.c:(.text._lseek_r+0x10): warning: _lseek is not implemented and will always fail
+d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/thumb/v8-m.main+fp/hard\libg_nano.a(libc_a-readr.o): in function `_read_r':
+readr.c:(.text._read_r+0x10): warning: _read is not implemented and will always fail
+d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: d:/Renesas/RA/e2studio_v2025-07_fsp_v6.1.0/toolchains/gcc_arm/13.2.rel1/bin/../lib/gcc/arm-none-eabi/13.2.1/thumb/v8-m.main+fp/hard\libg_nano.a(libc_a-writer.o): in function `_write_r':
+writer.c:(.text._write_r+0x10): warning: _write is not implemented and will always fail
+arm-none-eabi-objcopy -O ihex "sil_ultra_slow_jogging.elf"  "sil_ultra_slow_jogging.hex"
+arm-none-eabi-size --format=berkeley "sil_ultra_slow_jogging.elf"
+   text	   data	    bss	    dec	    hex	filename
+ 218992	    272	 177921	 397185	  60f81	sil_ultra_slow_jogging.elf

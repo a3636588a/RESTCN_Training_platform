@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<section name="Workbench">
+	<section name="id_code_dialog_section">
+		<item key="id_digit" value="32"/>
+		<item key="is_little_endian" value="true"/>
+		<item key="input_type" value="0"/>
+		<item key="endian_format" value="false"/>
+	</section>
+</section>

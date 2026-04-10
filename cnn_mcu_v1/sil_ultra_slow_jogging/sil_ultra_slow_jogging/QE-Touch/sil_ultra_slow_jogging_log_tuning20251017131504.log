@@ -1,0 +1,111 @@
+***** 2025/10/17 13:15:04 *****
+QE Version                                        :4.2.0.v20250714-0546
+Project Path                                      :H:\sil_projects\projects\sil_ultra_slow_jogging
+Configuration File                                :sil_ultra_slow_jogging
+IDE                                               :e2 studio with Emulator
+Emulator                                          :J-Link ARM
+MCU                                               :RA6M2 R7FA6M2AF3CFB
+<< METHOD 0 >>
+[Button(self) 0]
+TS                                                : TS04,
+[Button(self) 1]
+TS                                                : TS06,
+[Button(self) 2]
+TS                                                : TS08,
+[Button(self) 3]
+TS                                                : TS11,
+
+<<<< Tuning Type : Advance_SelectManually >>>>
+System Clock Frequency (MHz)                      :120.000
+PCLKB Frequency (MHz)                             :60.000
+CTSU Operating Frequency (MHz)                    :30.000
+Operating Voltage (V)                             :3.300
+TSCAP Voltage (V)                                 :1.180
+---------- Phase1 ----------
+<< METHOD 0 >>
+[TS04]
+Measurement Value                                 : 22125
+Resistance Value (ohm)                            : 560
+Parasitic Capacitance (pF)                        : 72.48259
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+
+[TS06]
+Measurement Value                                 : 22094
+Resistance Value (ohm)                            : 560
+Parasitic Capacitance (pF)                        : 72.378006
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+
+[TS08]
+Measurement Value                                 : 22053
+Resistance Value (ohm)                            : 560
+Parasitic Capacitance (pF)                        : 72.23969
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+
+[TS11]
+Measurement Value                                 : 21804
+Resistance Value (ohm)                            : 560
+Parasitic Capacitance (pF)                        : 71.39966
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+
+
+---------- Phase2 ----------
+<< METHOD 0 >>
+[TS04]
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+CTSUSNUM                                          : 1
+CTSUSSDIV                                         : 8
+CTSUSDPA                                          : 30
+CTSUSO                                            : 180
+
+[TS06]
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+CTSUSNUM                                          : 1
+CTSUSSDIV                                         : 8
+CTSUSDPA                                          : 30
+CTSUSO                                            : 179
+
+[TS08]
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+CTSUSNUM                                          : 1
+CTSUSSDIV                                         : 8
+CTSUSDPA                                          : 30
+CTSUSO                                            : 179
+
+[TS11]
+Sensor Drive Pulse Frequency (MHz)                : 0.483871
+CTSUSNUM                                          : 1
+CTSUSSDIV                                         : 8
+CTSUSDPA                                          : 30
+CTSUSO                                            : 176
+
+
+---------- Phase3 ----------
+<< METHOD 0 >>
+[Button(self) 0]
+  << TS04 >>
+  Measurement Value (Off)                         : 31625
+  Measurement Value (On)                          : 31599
+  Threshold                                       : 65535
+  Hysteresis                                      : 3276
+
+[Button(self) 1]
+  << TS06 >>
+  Measurement Value (Off)                         : 31741
+  Measurement Value (On)                          : 31607
+  Threshold                                       : 65535
+  Hysteresis                                      : 3276
+
+[Button(self) 2]
+  << TS08 >>
+  Measurement Value (Off)                         : 31781
+  Measurement Value (On)                          : 31540
+  Threshold                                       : 65535
+  Hysteresis                                      : 3276
+
+[Button(self) 3]
+  << TS11 >>
+  Measurement Value (Off)                         : 31822
+  Measurement Value (On)                          : 32015
+  Threshold                                       : 115
+  Hysteresis                                      : 5
+
