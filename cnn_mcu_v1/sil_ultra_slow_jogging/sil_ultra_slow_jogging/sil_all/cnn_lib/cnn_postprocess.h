@@ -6,16 +6,16 @@
 #include "cnn_detect.h"
 
 /* Default parameters based on UI backfill */
-#define CNN_POST_ALPHA_DEFAULT     0.30f
+#define CNN_POST_ALPHA_DEFAULT     0.40f
 #define CNN_POST_MARGIN_DEFAULT    0.45f
 #define CNN_POST_EXIT_DEFAULT      0.25f
 
 /* Tiered Validation Settings */
 #define CNN_POST_STABLE_FAST       0
-#define CNN_POST_STABLE_NORMAL     10
-#define CNN_POST_STABLE_RESTRICTED 15
+#define CNN_POST_STABLE_NORMAL     5
+#define CNN_POST_STABLE_RESTRICTED 10
 
-#define CNN_POST_THRESH_FAST       0.70f
+#define CNN_POST_THRESH_FAST       0.55f
 #define CNN_POST_THRESH_NORMAL     0.50f
 #define CNN_POST_THRESH_RESTRICTED 0.75f
 

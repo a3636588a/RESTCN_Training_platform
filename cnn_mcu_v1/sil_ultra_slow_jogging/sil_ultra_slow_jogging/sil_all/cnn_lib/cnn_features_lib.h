@@ -7,7 +7,7 @@
 #define CNN_WIN_LEN      60u
 #define CNN_CH_USED       5u
 #define CNN_INFER_STRIDE  3u
-#define CNN_SLOPE_FACTOR  30.00f
+#define CNN_SLOPE_FACTOR  20.00f
 
 /* CNN Input Dimensions (Level + Slope) */
 #define CNN_INPUT_CH_LEVEL   5

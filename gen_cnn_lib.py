@@ -153,23 +153,34 @@ static float sigmoid(float x) {
     return 1.0f / (1.0f + expf(-x));
 }
 
-/* 1D Convolution with Same Padding */
+/* 1D Convolution with Same Padding - Optimized for 100Hz Performance */
 static void conv1d_same_padding(const float *input, int input_len, int in_ch,
                                const float *weights, const float *bias,
                                int out_ch, int kernel_size, float *output) {
     int pad = kernel_size / 2;
-    for (int oc = 0; oc < out_ch; oc++) {
-        for (int i = 0; i < input_len; i++) {
-            float sum = bias[oc];
-            for (int k = 0; k < kernel_size; k++) {
-                int idx = i + k - pad;
-                if (idx >= 0 && idx < input_len) {
-                    for (int ic = 0; ic < in_ch; ic++) {
-                        sum += input[idx * in_ch + ic] * weights[((k * in_ch + ic) * out_ch) + oc];
+
+    /* Optimized Loop: Spatial-First with sequential weight access */
+    // 1. Initialize output with bias
+    for (int i = 0; i < input_len; i++) {
+        for (int oc = 0; oc < out_ch; oc++) {
+            output[i * out_ch + oc] = bias[oc];
+        }
+    }
+
+    // 2. Accumulate convolutions (Cache friendly oc-innermost loop)
+    for (int i = 0; i < input_len; i++) {
+        for (int k = 0; k < kernel_size; k++) {
+            int idx = i + k - pad;
+            if (idx >= 0 && idx < input_len) {
+                for (int ic = 0; ic < in_ch; ic++) {
+                    float in_val = input[idx * in_ch + ic];
+                    const float *w_ptr = &weights[((k * in_ch + ic) * out_ch)];
+                    float *out_ptr = &output[i * out_ch];
+                    for (int oc = 0; oc < out_ch; oc++) {
+                        out_ptr[oc] += in_val * w_ptr[oc];
                     }
                 }
             }
-            output[i * out_ch + oc] = sum;
         }
     }
 }
@@ -229,17 +240,17 @@ int cnn_detect_init(void) {
 }
 
 int cnn_detect_predict(const float *waveform_in, const float *var_in, const float *mean_in, float *proba_out) {
-    // L1: Conv1D (WIN, CH) -> (WIN, 32) -> SE -> MaxPool(WIN/2, 32)
+    // L1: Conv1D (WIN, CH) -> (WIN, 48) -> SE -> MaxPool(WIN/2, 48)
     int l1_len = (int)CNN_WIN_LEN;
-    conv1d_same_padding(waveform_in, l1_len, (int)CNN_INPUT_CH_TOTAL, CONV1_W, CONV1_B, 32, 5, workspace_a);
-    leaky_relu(workspace_a, l1_len * 32, 0.1f);
-    se_block(workspace_a, l1_len, 32, CONV1_SE_SQ_W, CONV1_SE_SQ_B, CONV1_SE_EX_W, CONV1_SE_EX_B);
-    maxpool1d(workspace_a, l1_len, 32, 2, workspace_b);
+    conv1d_same_padding(waveform_in, l1_len, (int)CNN_INPUT_CH_TOTAL, CONV1_W, CONV1_B, 48, 5, workspace_a);
+    leaky_relu(workspace_a, l1_len * 48, 0.1f);
+    se_block(workspace_a, l1_len, 48, CONV1_SE_SQ_W, CONV1_SE_SQ_B, CONV1_SE_EX_W, CONV1_SE_EX_B);
+    maxpool1d(workspace_a, l1_len, 48, 2, workspace_b);
     int l1_out_len = l1_len / 2;
 
-    // L2: Conv1D (L1_OUT, 32) -> (L1_OUT, 64) -> SE -> MaxPool(L1_OUT/2, 64)
+    // L2: Conv1D (L1_OUT, 48) -> (L1_OUT, 64) -> SE -> MaxPool(L1_OUT/2, 64)
     int l2_len = l1_out_len;
-    conv1d_same_padding(workspace_b, l2_len, 32, CONV2_W, CONV2_B, 64, 3, workspace_a);
+    conv1d_same_padding(workspace_b, l2_len, 48, CONV2_W, CONV2_B, 64, 3, workspace_a);
     leaky_relu(workspace_a, l2_len * 64, 0.1f);
     se_block(workspace_a, l2_len, 64, CONV2_SE_SQ_W, CONV2_SE_SQ_B, CONV2_SE_EX_W, CONV2_SE_EX_B);
     maxpool1d(workspace_a, l2_len, 64, 2, workspace_b);

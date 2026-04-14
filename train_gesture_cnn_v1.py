@@ -267,7 +267,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     in_win = layers.Input(shape=(cfg.window_len, len(cfg.ch_list) * 2), name="input_waveform")
     
     # Waveform Branch (Now 2-Layer with SE)
-    x = layers.Conv1D(32, kernel_size=5, padding='same')(in_win)
+    x = layers.Conv1D(48, kernel_size=5, padding='same')(in_win)
     x = layers.BatchNormalization()(x)
     x = layers.LeakyReLU(negative_slope=0.1)(x)
     x = squeeze_excitation_block(x, ratio=4) # SE Block 1

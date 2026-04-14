@@ -16,11 +16,11 @@ void cnn_post_reset_buffer(cnn_post_ctx_t *ctx) {
 }
 
 static bool is_priority(int id) {
-    return (id == 0 || id == 5 || id == 10 || id == 11 || id == 14);
+    return (id == 0 || id == 5 || id == 10 || id == 11 || id == 14 || id == 15);
 }
 
 static bool is_restricted(int id) {
-    return (id == 1 || id == 2 || id == 13 || id == 15);
+    return (id == 1 || id == 2 || id == 13);
 }
 
 int cnn_post_update(cnn_post_ctx_t *ctx, const float *raw_proba) {
