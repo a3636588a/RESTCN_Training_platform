@@ -162,9 +162,7 @@ static void conv1d_same_padding(const float *input, int input_len, int in_ch,
     /* Optimized Loop: Spatial-First with sequential weight access */
     // 1. Initialize output with bias
     for (int i = 0; i < input_len; i++) {
-        for (int oc = 0; oc < out_ch; oc++) {
-            output[i * out_ch + oc] = bias[oc];
-        }
+        memcpy(&output[i * out_ch], bias, out_ch * sizeof(float));
     }
 
     // 2. Accumulate convolutions (Cache friendly oc-innermost loop)
