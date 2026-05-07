@@ -185,7 +185,7 @@ class UIProgressCallback(tf.keras.callbacks.Callback):
             loss = l.get('loss', 0)
             
             # Simple progress message without unicode bars
-            msg = f"Epoch {epoch+1:3d}/{self.total_epochs} | acc={acc:.4f}, val_acc={val_acc:.4f}, loss={loss:.4f}"
+            msg = f"Epoch {epoch+1:3d}/{self.total_epochs} | acc={acc:.4f}, val_acc={val_acc:.4f}, loss={loss:.4f}, val_loss={l.get('val_loss', 0):.4f}"
             self.log_fn(msg)
             if hasattr(self.log_fn, 'flush'): self.log_fn.flush()
 

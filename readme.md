@@ -209,3 +209,20 @@ graph TD
     *   A: 調大 `Slope Factor` 並將該手勢 Tier 設為 `Fast`。
 *   **Q: 手勢辨識後一直卡著變不回來？**
     *   A: 調大 `Switching Margin` 並調高 `Latch Exit Thresh`。
+
+## 9. 打包與部署 (Packaging & Deployment)
+
+本專案使用 PyInstaller 將 Python UI 應用程式打包為獨立的 Windows 執行檔 (`.exe`)。
+
+### 9.1 打包指令
+請在專案根目錄下執行以下指令：
+
+```powershell
+& "C:/Users/USE/miniconda3/envs/mlp/python.exe" -m PyInstaller --noconfirm ui_v6.spec
+```
+
+### 9.2 設定檔說明
+我們使用 `ui_v6.spec` 進行打包，該設定檔已包含以下優化：
+*   **自動收集隱藏相依項**：已配置自動收集 `rich` (Unicode 數據)、`sklearn`、`pandas`、`scipy` 與 `joblib` 等關鍵在庫。
+*   **日誌重導向**：在打包後的視窗模式下，自動將後端庫（如 TensorFlow 的學習率調整訊息）重導向至 UI 右側的日誌終端，防止程式崩潰。
+*   **多腳本整合**：已將訓練、權重導出、代碼產生等所有背景工具整合進執行檔。

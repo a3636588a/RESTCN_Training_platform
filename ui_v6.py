@@ -25,9 +25,23 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QProgressBar, QGridLayout
 )
 
-# Import background scripts for direct calling (Onefile support)
 import gen_cnn_lib
 import gen_dynamic_model_header as gen_dyn
+
+
+# =========================
+# StdIO Redirection (For Frozen/Windowed mode)
+# =========================
+class QLogRedirector(QObject):
+    log_signal = Signal(str)
+
+    def write(self, s):
+        # Filter purely empty writes to avoid noise
+        if s and s.strip():
+            self.log_signal.emit(s.strip())
+
+    def flush(self):
+        pass
 
 
 # =========================
@@ -1511,7 +1525,7 @@ class MainWindow(QMainWindow):
     # -------------------------
     def eventFilter(self, obj, event):
         if obj == self.tabs.tabBar() and event.type() == QEvent.MouseButtonPress:
-            index = self.tabs.tabBar().tabAt(event.pos())
+            index = self.tabs.tabBar().tabAt(event.position().toPoint())
             if index >= 0 and self.tabs.widget(index) == self.tab_autobuild:
                 now = time.time()
                 if now - self.last_tab_click_time < 0.5: # 500ms threshold
@@ -3851,6 +3865,18 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     w = MainWindow()
+
+    # --- Robust Log Redirection ---
+    # In PyInstaller 'console=False' mode, sys.stdout/stderr are None.
+    # We redirect them to the UI terminal only when frozen (packaged).
+    if getattr(sys, 'frozen', False):
+        # We must keep a reference to prevent garbage collection
+        global _redirector
+        _redirector = QLogRedirector()
+        _redirector.log_signal.connect(w.append_log)
+        sys.stdout = _redirector
+        sys.stderr = _redirector
+
     w.show()
     sys.exit(app.exec())
 
