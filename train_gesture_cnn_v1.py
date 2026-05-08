@@ -217,6 +217,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     X_var_all = []
     X_mean_all = []
     y_all = []
+    X_files_all = [] # 👈 Track file origins
     
     log_fn(f"Scanning {len(files)} files...")
     for f in files:
@@ -239,6 +240,9 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
                 X_var_all.append(Xv)
                 X_mean_all.append(Xm)
                 y_all.append(y)
+                # Save the relative path (e.g., "randy/10-100.csv")
+                rel_path = os.path.join(f.parent.name, f.name)
+                X_files_all.extend([rel_path] * Xw.shape[0])
     
     if not X_win_all:
         raise RuntimeError("No valid data found.")
@@ -247,6 +251,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     X_var = np.concatenate(X_var_all, axis=0)
     X_mean = np.concatenate(X_mean_all, axis=0)
     y = np.concatenate(y_all, axis=0)
+    X_files = np.array(X_files_all)
     
     num_classes = len(cfg.id_to_name)
     log_fn(f"[TRAIN_CNN] Data Loaded: {X_win.shape}, Var: {X_var.shape}, Classes: {num_classes}")
@@ -262,6 +267,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     X_var_train, X_var_val = X_var[idx_train], X_var[idx_val]
     X_mean_train, X_mean_val = X_mean[idx_train], X_mean[idx_val]
     y_train, y_val = y[idx_train], y[idx_val]
+    files_val = X_files[idx_val] # 👈 Track validation file origins
     
     # Model Architecture (Optimized Deep CNN with Multi-Pooling)
     in_win = layers.Input(shape=(cfg.window_len, len(cfg.ch_list) * 2), name="input_waveform")
@@ -397,6 +403,37 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     log_fn("\n[TRAIN] [REPORT] classification_report:")
     report = classification_report(y_true, y_pred, digits=3)
     log_fn(report)
+
+    # 👈 New: Error Analysis by File
+    log_fn("\n[TRAIN] [REPORT] Error Analysis by File:")
+    error_indices = np.where(y_pred != y_true)[0]
+    
+    if len(error_indices) == 0:
+        log_fn("No errors found in validation set!")
+    else:
+        error_by_class = {}
+        for idx in error_indices:
+            true_cls = int(y_true[idx])
+            pred_cls = int(y_pred[idx])
+            fname = files_val[idx]
+            
+            key = (true_cls, pred_cls)
+            if key not in error_by_class:
+                error_by_class[key] = []
+            error_by_class[key].append(fname)
+            
+        for (true_cls, pred_cls), fnames in sorted(error_by_class.items()):
+            true_name = cfg.id_to_name.get(true_cls, str(true_cls))
+            pred_name = cfg.id_to_name.get(pred_cls, str(pred_cls))
+            
+            log_fn(f"\n動作 [{true_name}] 被誤判為 [{pred_name}]，共 {len(fnames)} 次:")
+            
+            # Count occurrences of each file
+            from collections import Counter
+            counts = Counter(fnames)
+            # Show top 5 problematic files
+            for fname, count in counts.most_common(5):
+                log_fn(f"  - 檔案: {fname} (發生 {count} 次)")
     
     log_fn("\n[TRAIN] === TRAIN DONE ===")
     log_fn(f"[TRAIN] accuracy: {history.history['val_accuracy'][-1]}")
