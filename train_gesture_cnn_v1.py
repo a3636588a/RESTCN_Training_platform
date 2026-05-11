@@ -346,7 +346,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.learning_rate),
-        loss='sparse_categorical_crossentropy',
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(label_smoothing=0.08),
         metrics=['accuracy']
     )
     
