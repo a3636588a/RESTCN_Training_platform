@@ -346,7 +346,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.learning_rate),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(label_smoothing=0.08),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.08),
         metrics=['accuracy']
     )
     
@@ -377,9 +377,14 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     log_fn(f"[TRAIN] Computed class weights: {class_weight_dict}")
 
     start_time = time.time()
+    
+    # Convert labels to one-hot for CategoricalCrossentropy with label smoothing
+    y_train_one_hot = tf.keras.utils.to_categorical(y_train, num_classes)
+    y_val_one_hot = tf.keras.utils.to_categorical(y_val, num_classes)
+    
     history = model.fit(
-        [X_win_train, X_var_train, X_mean_train], y_train,
-        validation_data=([X_win_val, X_var_val, X_mean_val], y_val),
+        [X_win_train, X_var_train, X_mean_train], y_train_one_hot,
+        validation_data=([X_win_val, X_var_val, X_mean_val], y_val_one_hot),
         batch_size=cfg.batch_size,
         epochs=cfg.epochs,
         verbose=0, # Use UI callback instead
