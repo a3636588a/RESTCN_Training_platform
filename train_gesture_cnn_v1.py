@@ -259,9 +259,36 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     log_fn(f"[TRAIN] num_classes: {num_classes}")
     log_fn(f"[TRAIN] num_files: {len(list(cfg.data_dir.glob('*.csv'))) if cfg.data_dir.is_dir() else 0}")
     
-    # Split
-    indices = np.arange(len(y))
-    idx_train, idx_val = train_test_split(indices, test_size=0.2, random_state=42)
+    # Split by File (Stratified) to prevent data leakage
+    log_fn("[TRAIN] Splitting data by file (stratified) to prevent leakage...")
+    
+    # Get labels for each file for stratification
+    file_labels = []
+    valid_files = []
+    for f in files:
+        prefix = f.name.split("-")[0].lower()
+        if prefix in cfg.prefix_to_id:
+            file_labels.append(prefix)
+            valid_files.append(f)
+            
+    if not valid_files:
+        raise RuntimeError("No valid files with recognized prefixes found for splitting.")
+        
+    # Split the files
+    files_train, files_val_split = train_test_split(
+        valid_files, test_size=0.2, stratify=file_labels, random_state=42
+    )
+    
+    # Create sets for fast lookup
+    train_set = set([os.path.join(f.parent.name, f.name) for f in files_train])
+    val_set = set([os.path.join(f.parent.name, f.name) for f in files_val_split])
+    
+    # Map windows to train/val based on their file origin
+    idx_train = np.array([i for i, f in enumerate(X_files) if f in train_set])
+    idx_val = np.array([i for i, f in enumerate(X_files) if f in val_set])
+    
+    log_fn(f"[TRAIN] Split files: {len(files_train)} train, {len(files_val_split)} val")
+    log_fn(f"[TRAIN] Split windows: {len(idx_train)} train, {len(idx_val)} val")
     
     X_win_train, X_win_val = X_win[idx_train], X_win[idx_val]
     X_var_train, X_var_val = X_var[idx_train], X_var[idx_val]
