@@ -7,6 +7,7 @@ import re
 import sys
 import threading
 import time
+from datetime import datetime
 import numpy as np
 import joblib
 import serial
@@ -132,6 +133,7 @@ class DynamicMatcher:
 # Trainer
 # =========================
 import train_gesture_cnn_v1 as cnn_trainer
+import train_gesture_ds_tcn_v1 as ds_tcn_trainer
 
 # =========================
 # Detector
@@ -253,18 +255,26 @@ class TrainWorker(QObject):
     finished_ok = Signal(dict)
     finished_err = Signal(str)
 
-    def __init__(self, cfg: cnn_trainer.TrainCfg, stop_event: threading.Event):
+    def __init__(self, cfg: cnn_trainer.TrainCfg, stop_event: threading.Event, backbone: str = "cnn"):
         super().__init__()
         self.cfg = cfg
         self.stop_event = stop_event
+        self.backbone = (backbone or "cnn").strip().lower()
 
     def run(self):
         try:
-            res = cnn_trainer.train_cnn_from_cfg(
-                self.cfg,
-                log_fn=lambda s: self.log_line.emit(_tag_line("TRAIN_CNN", s)),
-                stop_event=self.stop_event
-            )
+            if self.backbone == "ds_tcn":
+                res = ds_tcn_trainer.train_ds_tcn_from_cfg(
+                    self.cfg,
+                    log_fn=lambda s: self.log_line.emit(_tag_line("TRAIN_DS_TCN", s)),
+                    stop_event=self.stop_event
+                )
+            else:
+                res = cnn_trainer.train_cnn_from_cfg(
+                    self.cfg,
+                    log_fn=lambda s: self.log_line.emit(_tag_line("TRAIN_CNN", s)),
+                    stop_event=self.stop_event
+                )
             self.finished_ok.emit(res)
         except Exception as e:
             import traceback
@@ -1505,6 +1515,36 @@ class MainWindow(QMainWindow):
         self.term.append(s)
         sb = self.term.verticalScrollBar()
         sb.setValue(sb.maximum())
+        fp = getattr(self, "_train_log_fp", None)
+        if fp is not None:
+            try:
+                fp.write(s + "\n")
+                fp.flush()
+            except Exception:
+                pass
+
+    def _open_train_log_file(self, out_dir: Path):
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+            log_path = out_dir / f"train_log_{ts}.txt"
+            self._train_log_fp = open(log_path, "a", encoding="utf-8")
+            self._train_log_path = str(log_path)
+            self.append_log(_tag_line("TRAIN", f"[UI] Train log file: {log_path}"))
+        except Exception as e:
+            self._train_log_fp = None
+            self._train_log_path = ""
+            self.append_log(_tag_line("TRAIN", f"[WARN] Failed to open train log file: {e}"))
+
+    def _close_train_log_file(self):
+        fp = getattr(self, "_train_log_fp", None)
+        if fp is not None:
+            try:
+                fp.flush()
+                fp.close()
+            except Exception:
+                pass
+        self._train_log_fp = None
 
     # backwards compatible name (有些舊段落用 append_term)
     def append_term(self, s: str):
@@ -1922,9 +1962,14 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.g_aug)
 
-        # Model (CNN only)
-        self.g_model = QGroupBox("Model (CNN)")
+        # Model
+        self.g_model = QGroupBox("Model")
         self.f_model = QFormLayout(self.g_model)
+
+        self.combo_model_backbone = QComboBox()
+        self.combo_model_backbone.addItems(["cnn", "ds_tcn"])
+        self.combo_model_backbone.setCurrentText("cnn")
+        self.f_model.addRow("model_backbone:", self.combo_model_backbone)
 
         self.dsb_test_size = NoWheelDoubleSpinBox()
         self.dsb_test_size.setDecimals(2)
@@ -3221,11 +3266,15 @@ class MainWindow(QMainWindow):
 
         self.stop_event_train.clear()
         self.btn_stop_train.setEnabled(True)
+        out_dir = Path(self.edit_out_dir.text().strip()) if self.edit_out_dir.text().strip() else Path(".")
+        self._open_train_log_file(out_dir)
         self.append_log(_tag_line("TRAIN", "[UI] Starting training ..."))
         self._set_busy("train")
 
         self.thread_train = QThread()
-        self.worker_train = TrainWorker(cfg, self.stop_event_train)
+        selected_backbone = self.combo_model_backbone.currentText().strip().lower() if hasattr(self, "combo_model_backbone") else "cnn"
+        self.append_log(_tag_line("TRAIN", f"[UI] Backbone: {selected_backbone}"))
+        self.worker_train = TrainWorker(cfg, self.stop_event_train, backbone=selected_backbone)
         self.worker_train.moveToThread(self.thread_train)
 
         self.thread_train.started.connect(self.worker_train.run)
@@ -3258,6 +3307,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Train", msg)
 
     def on_train_thread_finished(self):
+        self._close_train_log_file()
         self.btn_stop_train.setEnabled(False)
         self.thread_train = None
         self.worker_train = None

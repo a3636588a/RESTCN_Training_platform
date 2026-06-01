@@ -29,7 +29,10 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.utils import class_weight
 import time
 import matplotlib.pyplot as plt
-import seaborn as sns
+try:
+    import seaborn as sns
+except Exception:
+    sns = None
 
 # Re-use structure from your existing trainer for compatibility
 @dataclass
@@ -514,7 +517,16 @@ def plot_training_results(history, y_true, y_pred, id_to_name, model_path):
     labels = [id_to_name.get(i, str(i)) for i in range(num_classes)]
     
     cm = confusion_matrix(y_true, y_pred, labels=range(num_classes))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+    if sns is not None:
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+    else:
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.colorbar()
+        plt.xticks(range(len(labels)), labels, rotation=45, ha='right')
+        plt.yticks(range(len(labels)), labels)
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                plt.text(j, i, str(cm[i, j]), ha='center', va='center', color='black', fontsize=8)
     plt.title('Confusion Matrix Heatmap')
     plt.xlabel('Predicted')
     plt.ylabel('True')
