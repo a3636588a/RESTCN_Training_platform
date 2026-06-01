@@ -160,3 +160,10 @@ plk/
 *.csv
 *.json
 !dynamic_gestures_null.json
+
+# Renesas e2 studio / Eclipse Workspace & Build Artifacts
+.metadata/
+**/Debug/
+**/Release/
+*.log
+

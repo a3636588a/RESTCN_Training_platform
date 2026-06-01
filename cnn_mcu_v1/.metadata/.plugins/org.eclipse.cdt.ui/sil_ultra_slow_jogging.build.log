@@ -1,8 +1,0 @@
-09:46:58 **** 项目sil_ultra_slow_jogging配置Debug的增量构建 ****
-make -r -j12 all 
-arm-none-eabi-size --format=berkeley "sil_ultra_slow_jogging.elf"
-   text	   data	    bss	    dec	    hex	filename
- 237220	    272	 177921	 415413	  656b5	sil_ultra_slow_jogging.elf
-
-09:46:58 Build Finished. 0 errors, 0 warnings. (took 668ms)
-
