@@ -28,7 +28,7 @@
 ***********************************************************************************************************************/
 /***********************************************************************************************************************
 * Touch I/F Configuration File  : sil_ultra_slow_jogging.tifcfg
-* Tuning Log File               : sil_ultra_slow_jogging_log_tuning20260519163539.log
+* Tuning Log File               : sil_ultra_slow_jogging_log_tuning20260520103513.log
 ***********************************************************************************************************************/
 
 #include "qe_touch_config.h"
@@ -59,12 +59,12 @@ CTSU Related Information for [CONFIG01] configuration.
 
 const ctsu_element_cfg_t g_qe_ctsu_element_cfg_config01[] =
 {
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x251, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x310, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x307, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x25D, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x17C, .snum = 0x00, .sdpa = 0x18 },
     { .ssdiv = CTSU_SSDIV_0500, .so = 0x180, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x257, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x30C, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x308, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x24D, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x186, .snum = 0x00, .sdpa = 0x18 },
 };
 
 const ctsu_cfg_t g_qe_ctsu_cfg_config01 =
@@ -143,38 +143,38 @@ const touch_button_cfg_t g_qe_touch_button_cfg_config01[] =
     /* button00 */
     {
         .elem_index = 0,
-        .threshold  = 65535,
-        .hysteresis = 3276,
+        .threshold  = 3713,
+        .hysteresis = 185,
     },
     /* button01 */
     {
         .elem_index = 1,
-        .threshold  = 65535,
-        .hysteresis = 3276,
+        .threshold  = 739,
+        .hysteresis = 36,
     },
     /* button02 */
     {
         .elem_index = 2,
-        .threshold  = 132,
-        .hysteresis = 6,
+        .threshold  = 839,
+        .hysteresis = 41,
     },
     /* button03 */
     {
         .elem_index = 3,
-        .threshold  = 97,
-        .hysteresis = 4,
+        .threshold  = 626,
+        .hysteresis = 31,
     },
     /* button04 */
     {
         .elem_index = 4,
-        .threshold  = 65535,
-        .hysteresis = 3276,
+        .threshold  = 1336,
+        .hysteresis = 66,
     },
     /* button05 */
     {
         .elem_index = 5,
-        .threshold  = 65535,
-        .hysteresis = 3276,
+        .threshold  = 607,
+        .hysteresis = 30,
     },
 };
 #endif
