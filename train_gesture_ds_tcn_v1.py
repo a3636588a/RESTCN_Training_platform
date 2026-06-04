@@ -157,7 +157,7 @@ def train_ds_tcn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, s
     model = models.Model(inputs=[in_win, in_var, in_mean], outputs=out)
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.learning_rate),
-        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.08),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=cfg.label_smoothing),
         metrics=["accuracy"],
     )
     model.summary(print_fn=log_fn)

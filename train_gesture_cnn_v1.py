@@ -50,6 +50,7 @@ class TrainCfg:
     batch_size: int = 32
     epochs: int = 200
     learning_rate: float = 0.001
+    label_smoothing: float = 0.08
     early_stop_patience: int = 15
     lr_patience: int = 10
     
@@ -349,7 +350,7 @@ def train_cnn_from_cfg(cfg: TrainCfg, log_fn: Callable[[str], None] = None, stop
     
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=cfg.learning_rate),
-        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.08),
+        loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=cfg.label_smoothing),
         metrics=['accuracy']
     )
     

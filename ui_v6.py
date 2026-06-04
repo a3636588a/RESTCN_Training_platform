@@ -538,6 +538,198 @@ class DetectWorker(QObject):
             self.finished_err.emit(str(e))
 
 
+class CsvDetectReplayWorker(QObject):
+    log_line = Signal(str)
+    finished_ok = Signal(dict)
+    finished_err = Signal(str)
+    dynamic_triggered = Signal(str)
+    stable_changed = Signal(str)
+
+    def __init__(self, cfg: DetectCfg, csv_path: str, stop_event: threading.Event):
+        super().__init__()
+        self.cfg = cfg
+        self.csv_path = csv_path
+        self.stop_event = stop_event
+
+    def _log(self, s: str):
+        self.log_line.emit(_tag_line("DETECT", s))
+
+    def _load_dynamic_gestures(self) -> List[dict]:
+        path_str = getattr(self, "dynamic_json_path", "dynamic_gestures.json")
+        try:
+            path = Path(path_str)
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data.get("dynamic_gestures", [])
+        except Exception:
+            pass
+        return [{"name": "NICE", "sequence": "ok,peace", "max_gap": 2, "time_window": 2.0}]
+
+    @staticmethod
+    def _parse_expected_label(csv_path: str) -> Optional[int]:
+        stem = Path(csv_path).stem
+        prefix = stem.split("-", 1)[0].strip()
+        try:
+            return int(prefix)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _to_int_map(row: dict, prefix: str, channels: List[int]) -> Dict[int, int]:
+        out: Dict[int, int] = {}
+        for ch in channels:
+            key = f"{prefix}{ch}"
+            if key not in row:
+                continue
+            raw = str(row.get(key, "")).strip()
+            if not raw:
+                continue
+            out[ch] = int(float(raw))
+        return out
+
+    def run(self):
+        try:
+            detect.MODEL_PATH = self.cfg.model_path
+            detect.META_PATH = self.cfg.meta_path
+            detect.PRINT_PROBA = bool(self.cfg.print_proba)
+            detect.USE_MANUAL_HOLDAVG = bool(self.cfg.use_manual_holdavg)
+            detect.MANUAL_HOLDAVG = {int(k): int(v) for k, v in (self.cfg.manual_holdavg or {}).items()}
+            detect.ENABLE_GAIN_MAP = bool(self.cfg.enable_gain_map)
+            detect.STD_BASELINE_A = {int(k): int(v) for k, v in (self.cfg.std_baseline_a or {}).items()}
+            detect.STD_HOLDAVG_A = {int(k): int(v) for k, v in (self.cfg.std_holdavg_a or {}).items()}
+            detect.MIN_SPAN_B = float(self.cfg.min_span_b)
+            detect.GAIN_CLAMP_MIN = float(self.cfg.gain_clamp_min)
+            detect.GAIN_CLAMP_MAX = float(self.cfg.gain_clamp_max)
+            detect.SLOPE_FACTOR = float(self.cfg.post_slope_factor)
+            detect.GAIN_READY = False
+
+            self._log("--- CSV replay detect started ---")
+            self._log(f"CSV  : {self.csv_path}")
+            self._log(f"Model: {detect.MODEL_PATH}")
+            self._log(f"Meta : {detect.META_PATH}")
+
+            dynamic_cfg = self._load_dynamic_gestures()
+            matcher = DynamicMatcher(dynamic_cfg)
+            detector = detect.RealtimeGestureDetector()
+            detector.predict_stride = 1
+            matcher.set_prefix_to_id(detector.id_to_name)
+            detect.GAIN_MAP = {int(ch): 1.0 for ch in detector.channels}
+
+            post_proc = None
+            if detector and detector.clf is not None:
+                post_proc = CnnPostProcessor(
+                    alpha=self.cfg.post_alpha,
+                    margin=self.cfg.post_margin,
+                    exit_thresh=self.cfg.post_exit_thresh,
+                    tier_data=self.cfg.post_tier_data,
+                    num_classes=len(detector.id_to_name)
+                )
+
+            expected_id = self._parse_expected_label(self.csv_path)
+            if expected_id is not None:
+                expected_name = detector.id_to_name.get(expected_id, str(expected_id))
+                self._log(f"[CSV] Expected label from filename: {expected_id} ({expected_name})")
+            else:
+                self._log("[CSV] Filename prefix is not numeric; skipping expected-label check.")
+
+            current_base_map = dict(detect.STD_BASELINE_A)
+            current_hold_map = dict(detect.STD_HOLDAVG_A)
+            if detect.USE_MANUAL_HOLDAVG:
+                current_hold_map.update({int(k): int(v) for k, v in detect.MANUAL_HOLDAVG.items()})
+
+            if detect.ENABLE_GAIN_MAP and current_base_map:
+                detect._try_update_gain_from_pending(current_base_map, current_hold_map, detector.channels, force=True)
+
+            pred_counter = 0
+            raw_pred_counts: Counter = Counter()
+            stable_pred_counts: Counter = Counter()
+            last_stable_id = -2
+
+            with open(self.csv_path, mode="r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row_idx, row in enumerate(reader, start=1):
+                    if self.stop_event.is_set():
+                        break
+
+                    row_map = self._to_int_map(row, "ROWCH", detector.channels)
+                    if len(row_map) < len(detector.channels):
+                        continue
+
+                    base_map = self._to_int_map(row, "MOVBASE", detector.channels)
+                    if base_map:
+                        current_base_map.update(base_map)
+
+                    hold_map = self._to_int_map(row, "HOLDAVG", detector.channels)
+                    if hold_map:
+                        current_hold_map.update(hold_map)
+
+                    if not current_base_map:
+                        continue
+
+                    if detect.USE_MANUAL_HOLDAVG:
+                        for ch in detector.channels:
+                            if ch not in current_hold_map and ch in detect.MANUAL_HOLDAVG:
+                                current_hold_map[ch] = detect.MANUAL_HOLDAVG[ch]
+
+                    if detect.ENABLE_GAIN_MAP:
+                        detect._try_update_gain_from_pending(current_base_map, current_hold_map, detector.channels)
+
+                    detector.push_data(row_map, current_base_map, current_hold_map, detect.GAIN_MAP)
+
+                    pred_id, conf, probs = detector.predict(detect.GAIN_MAP)
+                    if pred_id is None or probs is None:
+                        continue
+
+                    pred_counter += 1
+                    raw_pred_counts[pred_id] += 1
+
+                    stable_id = -1
+                    if post_proc:
+                        stable_id = post_proc.update(list(probs))
+                        if stable_id != -1:
+                            stable_pred_counts[stable_id] += 1
+
+                    pred_name = detector.id_to_name.get(pred_id, str(pred_id))
+                    stable_name = detector.id_to_name.get(stable_id, str(stable_id)) if stable_id != -1 else "convert"
+
+                    if stable_id != last_stable_id:
+                        last_stable_id = stable_id
+                        self.stable_changed.emit(stable_name)
+
+                    if stable_id != -1:
+                        trig = matcher.feed(stable_id, time.time())
+                        if trig:
+                            self._log(f"[DYNAMIC] {trig}")
+                            self.dynamic_triggered.emit(trig)
+
+                    probs_l = list(probs)
+                    top_idx = sorted(range(len(probs_l)), key=lambda i: probs_l[i], reverse=True)[:5]
+                    top = " | ".join([f"{detector.id_to_name.get(i, str(i))}:{probs_l[i]:.2f}" for i in top_idx])
+                    self._log(f"[CSV_PRED] row={row_idx} pred={pred_name} ({conf:.2f}) -> {stable_name} | {top}")
+
+            result = {
+                "csv_path": self.csv_path,
+                "expected_id": expected_id,
+                "num_predictions": pred_counter,
+            }
+            if raw_pred_counts:
+                best_raw_id, best_raw_count = raw_pred_counts.most_common(1)[0]
+                result["top_raw_id"] = best_raw_id
+                result["top_raw_name"] = detector.id_to_name.get(best_raw_id, str(best_raw_id))
+                result["top_raw_count"] = best_raw_count
+            if stable_pred_counts:
+                best_stable_id, best_stable_count = stable_pred_counts.most_common(1)[0]
+                result["top_stable_id"] = best_stable_id
+                result["top_stable_name"] = detector.id_to_name.get(best_stable_id, str(best_stable_id))
+                result["top_stable_count"] = best_stable_count
+
+            self.finished_ok.emit(result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.finished_err.emit(str(e))
+
+
 # =========================
 # Build worker
 # =========================
@@ -1999,6 +2191,14 @@ class MainWindow(QMainWindow):
         self.dsb_learning_rate.setValue(0.001)
         self.f_model.addRow("learning_rate:", self.dsb_learning_rate)
 
+        self.dsb_label_smoothing = NoWheelDoubleSpinBox()
+        self.dsb_label_smoothing.setDecimals(3)
+        self.dsb_label_smoothing.setRange(0.0, 0.5)
+        self.dsb_label_smoothing.setSingleStep(0.01)
+        self.dsb_label_smoothing.setValue(0.08)
+        self.dsb_label_smoothing.setToolTip("CategoricalCrossentropy 的 label smoothing。值越高，模型通常越不會輸出接近 1.00 的 confidence。")
+        self.f_model.addRow("label_smoothing:", self.dsb_label_smoothing)
+
         # Patience params
         self.spin_early_stop_patience = NoWheelSpinBox()
         self.spin_early_stop_patience.setRange(1, 100)
@@ -2089,7 +2289,14 @@ class MainWindow(QMainWindow):
         # Import Button for Detect parameters
         btn_detect_import = QPushButton("Import STD/HOLDAVG from CSV (Select Log)")
         btn_detect_import.clicked.connect(self.on_detect_import_csv)
-        f.addRow("", btn_detect_import)
+        self.btn_detect_replay_csv = QPushButton("Replay CSV Detect")
+        self.btn_detect_replay_csv.clicked.connect(self.on_detect_replay_csv)
+        w_detect_csv = QWidget()
+        h_detect_csv = QHBoxLayout(w_detect_csv)
+        h_detect_csv.setContentsMargins(0, 0, 0, 0)
+        h_detect_csv.addWidget(btn_detect_import)
+        h_detect_csv.addWidget(self.btn_detect_replay_csv)
+        f.addRow("", w_detect_csv)
 
         self.edit_port = QLineEdit(getattr(detect, "PORT", "COM6"))
         self.combo_baud = QComboBox()
@@ -3123,6 +3330,7 @@ class MainWindow(QMainWindow):
             epochs=int(self.spin_cnn_epochs.value()),
             batch_size=int(self.spin_batch_size.value()),
             learning_rate=float(self.dsb_learning_rate.value()),
+            label_smoothing=float(self.dsb_label_smoothing.value()),
             early_stop_patience=int(self.spin_early_stop_patience.value()),
             lr_patience=int(self.spin_lr_patience.value()),
 
@@ -3502,11 +3710,17 @@ class MainWindow(QMainWindow):
             return "GAIN_CLAMP min must be < max"
         return None
 
-    def on_detect_start(self):
-        if self.thread_detect is not None:
-            return
+    def _validate_detect_replay_cfg(self, cfg: DetectCfg) -> Optional[str]:
+        if not cfg.model_path or not Path(cfg.model_path).exists():
+            return f"MODEL_PATH not found: {cfg.model_path}"
+        if not cfg.meta_path or not Path(cfg.meta_path).exists():
+            return f"META_PATH not found: {cfg.meta_path}"
+        if cfg.enable_gain_map and cfg.gain_clamp_min >= cfg.gain_clamp_max:
+            return "GAIN_CLAMP min must be < max"
+        return None
 
-        cfg = DetectCfg(
+    def _build_detect_cfg_from_ui(self) -> DetectCfg:
+        return DetectCfg(
             port=self.edit_port.text().strip(),
             baud=int(self.combo_baud.currentText()),
             model_path=self.edit_model.text().strip(),
@@ -3514,7 +3728,7 @@ class MainWindow(QMainWindow):
             post_alpha=self.dsb_detect_alpha.value(),
             post_margin=self.dsb_detect_margin.value(),
             post_exit_thresh=self.dsb_detect_exit.value(),
-            post_slope_factor=self.dsb_detect_slope.value(), 
+            post_slope_factor=self.dsb_detect_slope.value(),
             infer_stride=self.sb_detect_stride.value(),
             post_tier_data=self._extract_tier_data_from_ui(self.tbl_detect_tier_base, self.tbl_detect_gestures),
             print_proba=bool(self.chk_print_proba.isChecked()),
@@ -3527,6 +3741,12 @@ class MainWindow(QMainWindow):
             gain_clamp_min=float(self.dsb_gmin.value()),
             gain_clamp_max=float(self.dsb_gmax.value()),
         )
+
+    def on_detect_start(self):
+        if self.thread_detect is not None:
+            return
+
+        cfg = self._build_detect_cfg_from_ui()
 
         err = self._validate_detect_cfg(cfg)
         if err:
@@ -3556,6 +3776,50 @@ class MainWindow(QMainWindow):
         self.worker_detect.finished_err.connect(self.thread_detect.quit)
         self.thread_detect.finished.connect(self.on_detect_thread_finished)
 
+        self.worker_detect.dynamic_triggered.connect(self.on_dynamic_triggered)
+        self.worker_detect.stable_changed.connect(self.lbl_dynamic_result.setText)
+
+        self.thread_detect.start()
+
+    def on_detect_replay_csv(self):
+        if self.thread_detect is not None:
+            return
+
+        cfg = self._build_detect_cfg_from_ui()
+        err = self._validate_detect_replay_cfg(cfg)
+        if err:
+            QMessageBox.warning(self, "Detect CSV Replay", err)
+            return
+
+        default_dir = str(Path(self.edit_data_dir.text().strip())) if self.edit_data_dir.text().strip() else ""
+        csv_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select CSV for Detect Replay",
+            default_dir,
+            "CSV (*.csv);;All files (*.*)"
+        )
+        if not csv_path:
+            return
+
+        self.stop_event_detect.clear()
+        self.btn_detect_stop.setEnabled(True)
+        self.append_log(_tag_line("DETECT", f"[UI] Starting CSV replay detect: {csv_path}"))
+        self._set_busy("detect")
+
+        self.dynamic_json_path = self.edit_dynamic_json.text().strip() or "dynamic_gestures.json"
+
+        self.thread_detect = QThread()
+        self.worker_detect = CsvDetectReplayWorker(cfg, csv_path, self.stop_event_detect)
+        self.worker_detect.dynamic_json_path = self.dynamic_json_path
+        self.worker_detect.moveToThread(self.thread_detect)
+
+        self.thread_detect.started.connect(self.worker_detect.run)
+        self.worker_detect.log_line.connect(self.append_log)
+        self.worker_detect.finished_ok.connect(self.on_detect_ok)
+        self.worker_detect.finished_err.connect(self.on_detect_err)
+        self.worker_detect.finished_ok.connect(self.thread_detect.quit)
+        self.worker_detect.finished_err.connect(self.thread_detect.quit)
+        self.thread_detect.finished.connect(self.on_detect_thread_finished)
         self.worker_detect.dynamic_triggered.connect(self.on_dynamic_triggered)
         self.worker_detect.stable_changed.connect(self.lbl_dynamic_result.setText)
 
