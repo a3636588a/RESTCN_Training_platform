@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import sys
 import threading
 import time
 from datetime import datetime
 import numpy as np
+import pandas as pd
 import joblib
 import serial
 from dataclasses import dataclass, field
@@ -16,6 +18,8 @@ from pathlib import Path
 import csv
 from collections import Counter, deque
 from typing import Optional, Dict, List, Any, Callable
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, recall_score, f1_score
+from sklearn.model_selection import train_test_split
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QEvent
 from PySide6.QtWidgets import (
@@ -312,6 +316,439 @@ class DetectCfg:
     min_span_b: float
     gain_clamp_min: float
     gain_clamp_max: float
+
+
+@dataclass
+class TinyOlRecordCfg:
+    port: str
+    baud: int
+    output_dir: str
+    session_id: str
+    segment_index: int
+    target_id: int
+    target_name: str
+    record_samples: int
+    start_offset: int
+    window_len: int
+    channels: List[int]
+    use_manual_holdavg: bool
+    manual_holdavg: Dict[int, int]
+    std_baseline_a: Dict[int, int]
+    std_holdavg_a: Dict[int, int]
+
+
+class TinyOlRecordWorker(QObject):
+    log_line = Signal(str)
+    progress = Signal(int)
+    finished_ok = Signal(dict)
+    finished_err = Signal(str)
+
+    def __init__(self, cfg: TinyOlRecordCfg, stop_event: threading.Event):
+        super().__init__()
+        self.cfg = cfg
+        self.stop_event = stop_event
+
+    def _log(self, s: str):
+        self.log_line.emit(_tag_line("TINYOL", s))
+
+    def run(self):
+        try:
+            output_dir = Path(self.cfg.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            ser = serial.Serial(self.cfg.port, self.cfg.baud, timeout=0.1)
+            ser.reset_input_buffer()
+            self._log(f"UART record opened: {self.cfg.port} @ {self.cfg.baud}")
+
+            rows: List[dict] = []
+            current_base_map = dict(self.cfg.std_baseline_a or {})
+            current_hold_map = dict(self.cfg.std_holdavg_a or {})
+            effective_channels = [int(ch) for ch in (self.cfg.channels or [])]
+            if self.cfg.use_manual_holdavg:
+                for ch, val in (self.cfg.manual_holdavg or {}).items():
+                    current_hold_map.setdefault(int(ch), int(val))
+
+            while not self.stop_event.is_set():
+                line = ser.readline().decode(errors="ignore").strip()
+                if not line:
+                    continue
+
+                parsed = detect.parse_line(line)
+                if parsed is None:
+                    continue
+                msg, cnt, chn, vals = parsed
+                if effective_channels:
+                    channel_count = min(int(chn), len(vals), len(effective_channels))
+                else:
+                    channel_count = min(int(chn), len(vals))
+
+                if msg.startswith("SILMOVBASE"):
+                    for i in range(channel_count):
+                        ch = effective_channels[i] if effective_channels else (i + 1)
+                        current_base_map[ch] = int(vals[i])
+                    continue
+
+                if msg.startswith("SILHOLD") or msg.startswith("SILHOLDAVG"):
+                    for i in range(channel_count):
+                        ch = effective_channels[i] if effective_channels else (i + 1)
+                        current_hold_map[ch] = int(vals[i])
+                    continue
+
+                if not (msg.startswith("SILROWDATA") or msg.startswith("SILROW") or msg.startswith("SILINO")):
+                    continue
+                if not current_base_map:
+                    continue
+
+                row = {
+                    "SEQ": len(rows),
+                    "GESTURE": self.cfg.target_name,
+                    "TARGET_ID": self.cfg.target_id,
+                }
+                for i in range(channel_count):
+                    ch = effective_channels[i] if effective_channels else (i + 1)
+                    row[f"ROWCH{ch}"] = int(vals[i])
+                    row[f"MOVBASE{ch}"] = int(current_base_map.get(ch, 0))
+                    row[f"HOLDAVG{ch}"] = int(current_hold_map.get(ch, 0))
+                rows.append(row)
+                self.progress.emit(len(rows))
+
+                if len(rows) >= self.cfg.record_samples:
+                    self._log(f"Reached target samples: {len(rows)}")
+                    break
+
+            try:
+                ser.close()
+            except Exception:
+                pass
+
+            if not rows:
+                raise RuntimeError("No UART rows captured.")
+
+            raw_path = output_dir / f"{self.cfg.session_id}_target_raw_{self.cfg.segment_index:03d}.csv"
+            export_channels = [int(ch) for ch in (effective_channels or sorted(current_base_map.keys()) or sorted(current_hold_map.keys()))]
+            if not export_channels:
+                export_channels = list(range(1, channel_count + 1))
+            fieldnames = (
+                ["SEQ"]
+                + [f"ROWCH{i}" for i in export_channels]
+                + [f"MOVBASE{i}" for i in export_channels]
+                + [f"HOLDAVG{i}" for i in export_channels]
+                + ["GESTURE", "TARGET_ID"]
+            )
+            with raw_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow(row)
+
+            window_path = None
+            start = int(self.cfg.start_offset)
+            end = start + int(self.cfg.window_len)
+            if len(rows) >= end:
+                extracted = rows[start:end]
+                window_path = output_dir / f"{self.cfg.session_id}_target_window_{self.cfg.segment_index:03d}.csv"
+                with window_path.open("w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row in extracted:
+                        writer.writerow(row)
+                self._log(f"Extracted target window rows[{start}:{end}]")
+            else:
+                self._log(f"Captured {len(rows)} rows, not enough for window extraction ({end} required).")
+
+            self.finished_ok.emit({
+                "raw_csv": str(raw_path),
+                "window_csv": str(window_path) if window_path else "",
+                "rows": len(rows),
+                "window_start": start,
+                "window_len": int(self.cfg.window_len),
+            })
+        except Exception as e:
+            self.finished_err.emit(str(e))
+
+
+@dataclass
+class TinyOlTrainCfg:
+    model_path: str
+    meta_path: str
+    output_dir: str
+    session_id: str
+    target_id: int
+    target_name: str
+    slope_factor: float
+    batch_size: int
+    epochs: int
+    learning_rate: float
+    channels: List[int] = field(default_factory=list)
+    target_window_csvs: List[str] = field(default_factory=list)
+    replay_window_csvs: List[str] = field(default_factory=list)
+
+
+class TinyOlTrainWorker(QObject):
+    log_line = Signal(str)
+    finished_ok = Signal(dict)
+    finished_err = Signal(str)
+
+    def __init__(self, cfg: TinyOlTrainCfg, stop_event: threading.Event):
+        super().__init__()
+        self.cfg = cfg
+        self.stop_event = stop_event
+
+    def _log(self, s: str):
+        self.log_line.emit(_tag_line("TINYOL", s))
+
+    @staticmethod
+    def _load_window_csv(csv_path: str, slope_factor: float, label_id: int, channels_hint: Optional[List[int]] = None):
+        df = pd.read_csv(csv_path)
+        if channels_hint:
+            channels = [
+                int(ch) for ch in channels_hint
+                if f"ROWCH{int(ch)}" in df.columns
+                and f"MOVBASE{int(ch)}" in df.columns
+                and f"HOLDAVG{int(ch)}" in df.columns
+            ]
+        else:
+            channels = [int(re.sub(r"\D", "", c)) for c in df.columns if c.startswith("ROWCH")]
+            channels = sorted(set(channels))
+        if not channels:
+            raise RuntimeError(f"No ROWCH columns found in {csv_path}")
+
+        data_list = []
+        for ch in channels:
+            row = df[f"ROWCH{ch}"].values.astype(np.float32)
+            base = df[f"MOVBASE{ch}"].values.astype(np.float32)
+            hold = df[f"HOLDAVG{ch}"].values.astype(np.float32)
+            d_mapped = row - base
+            span = np.abs(hold - base)
+            span = np.maximum(span, 1.0)
+            dn = d_mapped / span
+            data_list.append(dn)
+
+        signal = np.stack(data_list, axis=1)
+        delta = np.zeros_like(signal)
+        delta[1:] = np.diff(signal, axis=0) * float(slope_factor)
+        combined = np.concatenate([signal, delta], axis=1)
+        X_win = combined[np.newaxis, :, :].astype(np.float32)
+        X_var = np.var(signal, axis=0, keepdims=True).astype(np.float32)
+        X_mean = np.mean(signal, axis=0, keepdims=True).astype(np.float32)
+        y = np.array([label_id], dtype=np.int32)
+        return X_win, X_var, X_mean, y
+
+    def _build_dataset(self):
+        meta = joblib.load(self.cfg.meta_path)
+        id_to_name = meta.get("id_to_name", {})
+        name_to_id = {str(v): int(k) for k, v in id_to_name.items()}
+
+        Xw_all, Xv_all, Xm_all, y_all = [], [], [], []
+        source_rows = []
+        role_flags: List[str] = []
+
+        for path in self.cfg.target_window_csvs:
+            Xw, Xv, Xm, y = self._load_window_csv(path, self.cfg.slope_factor, self.cfg.target_id, self.cfg.channels)
+            Xw_all.append(Xw); Xv_all.append(Xv); Xm_all.append(Xm); y_all.append(y)
+            source_rows.append({"path": path, "label_id": self.cfg.target_id, "role": "target"})
+            role_flags.append("target")
+
+        for path in self.cfg.replay_window_csvs:
+            df = pd.read_csv(path, nrows=1)
+            label_id = None
+            if "TARGET_ID" in df.columns:
+                try:
+                    label_id = int(df.iloc[0]["TARGET_ID"])
+                except Exception:
+                    label_id = None
+            if label_id is None and "GESTURE" in df.columns:
+                label_id = name_to_id.get(str(df.iloc[0]["GESTURE"]), self.cfg.target_id)
+            if label_id is None:
+                raise RuntimeError(f"Cannot determine label id for replay window: {path}")
+            Xw, Xv, Xm, y = self._load_window_csv(path, self.cfg.slope_factor, int(label_id), self.cfg.channels)
+            Xw_all.append(Xw); Xv_all.append(Xv); Xm_all.append(Xm); y_all.append(y)
+            source_rows.append({"path": path, "label_id": int(label_id), "role": "replay"})
+            role_flags.append("replay")
+
+        if not Xw_all:
+            raise RuntimeError("No TinyOL dataset windows available.")
+
+        Xw = np.concatenate(Xw_all, axis=0)
+        Xv = np.concatenate(Xv_all, axis=0)
+        Xm = np.concatenate(Xm_all, axis=0)
+        y = np.concatenate(y_all, axis=0)
+        return meta, Xw, Xv, Xm, y, source_rows, np.array(role_flags, dtype=object)
+
+    def _make_train_eval_split(self, y: np.ndarray):
+        indices = np.arange(len(y))
+        counts = Counter(y.tolist())
+        if len(y) >= 8 and all(v >= 2 for v in counts.values()):
+            try:
+                train_idx, eval_idx = train_test_split(
+                    indices, test_size=0.25, random_state=42, stratify=y
+                )
+                return np.array(train_idx), np.array(eval_idx), "stratified"
+            except Exception:
+                pass
+        return indices, indices, "reuse-train-as-eval"
+
+    def _select_trainable_dense_layers(self, model):
+        dense_layers = [layer for layer in model.layers if layer.__class__.__name__ == "Dense"]
+        if len(dense_layers) < 2:
+            raise RuntimeError("Model does not have enough Dense layers for TinyOL head update.")
+        trainable_names = {dense_layers[-1].name, dense_layers[-2].name}
+        for layer in model.layers:
+            layer.trainable = layer.name in trainable_names
+        return sorted(trainable_names)
+
+    def run(self):
+        try:
+            meta, Xw, Xv, Xm, y, source_rows, role_flags = self._build_dataset()
+            num_classes = int(meta.get("num_classes", len(meta.get("id_to_name", {}))))
+            train_idx, eval_idx, split_mode = self._make_train_eval_split(y)
+
+            self._log(f"Dataset windows: total={len(y)} train={len(train_idx)} eval={len(eval_idx)} mode={split_mode}")
+
+            model = cnn_trainer.tf.keras.models.load_model(self.cfg.model_path, compile=False)
+            trainable_names = self._select_trainable_dense_layers(model)
+            self._log(f"Trainable Dense layers: {', '.join(trainable_names)}")
+
+            model.compile(
+                optimizer=cnn_trainer.tf.keras.optimizers.SGD(learning_rate=float(self.cfg.learning_rate)),
+                loss=cnn_trainer.tf.keras.losses.CategoricalCrossentropy(),
+                metrics=["accuracy"],
+            )
+
+            y_train = cnn_trainer.tf.keras.utils.to_categorical(y[train_idx], num_classes)
+            y_eval = cnn_trainer.tf.keras.utils.to_categorical(y[eval_idx], num_classes)
+
+            train_target_mask = (role_flags[train_idx] == "target")
+            target_train_count = int(np.sum(train_target_mask))
+            replay_train_count = int(len(train_idx) - target_train_count)
+            oversample_factor = 1
+            expanded_train_idx = np.array(train_idx, dtype=np.int32)
+            sample_weight = np.ones(len(expanded_train_idx), dtype=np.float32)
+            if target_train_count > 0 and replay_train_count > target_train_count:
+                oversample_factor = int(np.ceil(replay_train_count / max(target_train_count, 1)))
+                oversample_factor = max(1, min(oversample_factor, 8))
+                target_idx = train_idx[train_target_mask]
+                replay_idx = train_idx[~train_target_mask]
+                expanded_train_idx = np.concatenate([replay_idx] + [target_idx] * oversample_factor).astype(np.int32)
+                sample_weight = np.ones(len(expanded_train_idx), dtype=np.float32)
+                sample_weight[len(replay_idx):] = 2.0
+            self._log(
+                f"Train mix: target={target_train_count} replay={replay_train_count} "
+                f"oversample={oversample_factor} expanded_train={len(expanded_train_idx)}"
+            )
+            self._log(
+                f"Train config: epochs={int(self.cfg.epochs)} batch={int(self.cfg.batch_size)} "
+                f"lr={float(self.cfg.learning_rate):.6f}"
+            )
+
+            history = model.fit(
+                [Xw[expanded_train_idx], Xv[expanded_train_idx], Xm[expanded_train_idx]],
+                cnn_trainer.tf.keras.utils.to_categorical(y[expanded_train_idx], num_classes),
+                validation_data=([Xw[eval_idx], Xv[eval_idx], Xm[eval_idx]], y_eval),
+                sample_weight=sample_weight,
+                batch_size=int(self.cfg.batch_size),
+                epochs=int(self.cfg.epochs),
+                verbose=0,
+            )
+            hist = history.history if hasattr(history, "history") else {}
+            losses = hist.get("loss", [])
+            accs = hist.get("accuracy", [])
+            val_losses = hist.get("val_loss", [])
+            val_accs = hist.get("val_accuracy", [])
+            for epoch_idx in range(max(len(losses), len(accs), len(val_losses), len(val_accs))):
+                loss_s = f"{float(losses[epoch_idx]):.4f}" if epoch_idx < len(losses) else "--"
+                acc_s = f"{float(accs[epoch_idx]):.4f}" if epoch_idx < len(accs) else "--"
+                vloss_s = f"{float(val_losses[epoch_idx]):.4f}" if epoch_idx < len(val_losses) else "--"
+                vacc_s = f"{float(val_accs[epoch_idx]):.4f}" if epoch_idx < len(val_accs) else "--"
+                self._log(
+                    f"Epoch {epoch_idx + 1}/{int(self.cfg.epochs)} | "
+                    f"loss={loss_s} acc={acc_s} val_loss={vloss_s} val_acc={vacc_s}"
+                )
+
+            base_model = cnn_trainer.tf.keras.models.load_model(self.cfg.model_path, compile=False)
+            base_probs = base_model.predict([Xw[eval_idx], Xv[eval_idx], Xm[eval_idx]], verbose=0)
+            cand_probs = model.predict([Xw[eval_idx], Xv[eval_idx], Xm[eval_idx]], verbose=0)
+            base_pred = np.argmax(base_probs, axis=1)
+            cand_pred = np.argmax(cand_probs, axis=1)
+            y_true = y[eval_idx]
+
+            output_dir = Path(self.cfg.output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            candidate_model_path = output_dir / f"{self.cfg.session_id}_tinyol.keras"
+            model.save(candidate_model_path)
+
+            labels = list(range(num_classes))
+            target_id = int(self.cfg.target_id)
+            target_recall_base = recall_score(y_true, base_pred, labels=labels, average=None, zero_division=0)[target_id]
+            target_recall_new = recall_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)[target_id]
+            target_f1_base = f1_score(y_true, base_pred, labels=labels, average=None, zero_division=0)[target_id]
+            target_f1_new = f1_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)[target_id]
+            overall_acc_base = accuracy_score(y_true, base_pred)
+            overall_acc_new = accuracy_score(y_true, cand_pred)
+            recall_base_all = recall_score(y_true, base_pred, labels=labels, average=None, zero_division=0)
+            recall_new_all = recall_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)
+            f1_base_all = f1_score(y_true, base_pred, labels=labels, average=None, zero_division=0)
+            f1_new_all = f1_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)
+
+            non_target_ids = [idx for idx in labels if idx != target_id]
+            non_target_recall_delta = [float(recall_new_all[idx] - recall_base_all[idx]) for idx in non_target_ids]
+            non_target_f1_delta = [float(f1_new_all[idx] - f1_base_all[idx]) for idx in non_target_ids]
+            worst_non_target_recall_delta = min(non_target_recall_delta) if non_target_recall_delta else 0.0
+            mean_non_target_f1_delta = float(np.mean(non_target_f1_delta)) if non_target_f1_delta else 0.0
+
+            target_recall_delta = float(target_recall_new - target_recall_base)
+            target_f1_delta = float(target_f1_new - target_f1_base)
+            overall_acc_delta = float(overall_acc_new - overall_acc_base)
+
+            passed = (
+                ((target_recall_delta >= 0.05) or (target_f1_delta >= 0.03))
+                and (overall_acc_delta >= -0.01)
+                and (worst_non_target_recall_delta >= -0.03)
+                and (mean_non_target_f1_delta >= -0.02)
+            )
+
+            report = {
+                "target_recall_base": float(target_recall_base),
+                "target_recall_new": float(target_recall_new),
+                "target_recall_delta": target_recall_delta,
+                "target_f1_base": float(target_f1_base),
+                "target_f1_new": float(target_f1_new),
+                "target_f1_delta": target_f1_delta,
+                "overall_acc_base": float(overall_acc_base),
+                "overall_acc_new": float(overall_acc_new),
+                "overall_acc_delta": overall_acc_delta,
+                "worst_non_target_recall_delta": float(worst_non_target_recall_delta),
+                "mean_non_target_f1_delta": float(mean_non_target_f1_delta),
+                "decision": "PASS" if passed else "REJECT",
+                "split_mode": split_mode,
+                "target_train_count": target_train_count,
+                "replay_train_count": replay_train_count,
+                "target_oversample_factor": oversample_factor,
+                "expanded_train_count": int(len(expanded_train_idx)),
+                "candidate_model_path": str(candidate_model_path),
+                "trainable_dense_layers": trainable_names,
+                "confusion_matrix_base": confusion_matrix(y_true, base_pred, labels=labels).tolist(),
+                "confusion_matrix_new": confusion_matrix(y_true, cand_pred, labels=labels).tolist(),
+                "classification_report_new": classification_report(
+                    y_true, cand_pred, labels=labels, zero_division=0, output_dict=True
+                ),
+                "source_rows": source_rows,
+            }
+            self._log(
+                f"Validation result: decision={report['decision']} "
+                f"target_recall={report['target_recall_base']:.3f}->{report['target_recall_new']:.3f} "
+                f"target_f1={report['target_f1_base']:.3f}->{report['target_f1_new']:.3f} "
+                f"acc={report['overall_acc_base']:.3f}->{report['overall_acc_new']:.3f}"
+            )
+
+            summary_path = output_dir / f"{self.cfg.session_id}_validation_summary.json"
+            summary_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            report["summary_path"] = str(summary_path)
+            self.finished_ok.emit(report)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.finished_err.emit(str(e))
 
 
 @dataclass
@@ -1339,7 +1776,7 @@ class AutoBuildWorker(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Gesture Trainer + Detector (UI v6 + Build/Flash)")
+        self.setWindowTitle("ML_Station")
         self.resize(1280, 850)
 
         self.busy_mode: Optional[str] = None
@@ -1579,6 +2016,11 @@ class MainWindow(QMainWindow):
         self.thread_detect: Optional[QThread] = None
         self.worker_detect: Optional[DetectWorker] = None
 
+        self.thread_tinyol_record: Optional[QThread] = None
+        self.worker_tinyol_record: Optional[TinyOlRecordWorker] = None
+        self.thread_tinyol_train: Optional[QThread] = None
+        self.worker_tinyol_train: Optional[TinyOlTrainWorker] = None
+
         self.thread_gen_cnn: Optional[QThread] = None
         self.worker_gen_cnn: Optional[GenCnnCodeWorker] = None
 
@@ -1616,11 +2058,13 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.tab_train = QWidget()
         self.tab_detect = QWidget()
+        self.tab_tinyol = QWidget()
         self.tab_gencode_cnn = QWidget()
         self.tab_build = QWidget()
         self.tab_autobuild = QWidget()
         self.tabs.addTab(self.tab_train, "Train")
         self.tabs.addTab(self.tab_detect, "Detect")
+        self.tabs.addTab(self.tab_tinyol, "TinyOL")
         self.tabs.addTab(self.tab_gencode_cnn, "Gen Code (CNN)")
         # self.tabs.addTab(self.tab_build, "Build") # Hidden by default (15-click unlock)
         self.tabs.addTab(self.tab_autobuild, "Auto Build")
@@ -1687,6 +2131,7 @@ class MainWindow(QMainWindow):
         # =========================
         self._build_train_tab()
         self._build_detect_tab()
+        self._build_tinyol_tab()
         self._build_gencode_cnn_tab()
         self._build_build_tab()
         self._build_autobuild_tab()
@@ -2552,6 +2997,246 @@ class MainWindow(QMainWindow):
         
         self.edit_meta.textChanged.connect(self.on_detect_meta_changed)
 
+    def _build_tinyol_tab(self):
+        layout = QVBoxLayout(self.tab_tinyol)
+        layout.setSpacing(8)
+
+        g_active = QGroupBox("Active Model / Dataset")
+        f_active = QFormLayout(g_active)
+
+        self.edit_tinyol_model = QLineEdit(str(getattr(detect, "MODEL_PATH", "gesture_model_v5.keras")))
+        self.btn_tinyol_browse_model = QPushButton("Browse...")
+        w_model = QWidget()
+        h_model = QHBoxLayout(w_model)
+        h_model.setContentsMargins(0, 0, 0, 0)
+        h_model.addWidget(self.edit_tinyol_model)
+        h_model.addWidget(self.btn_tinyol_browse_model)
+
+        self.edit_tinyol_meta = QLineEdit(str(getattr(detect, "META_PATH", "gesture_model_meta_v5.pkl")))
+        self.btn_tinyol_browse_meta = QPushButton("Browse...")
+        w_meta = QWidget()
+        h_meta = QHBoxLayout(w_meta)
+        h_meta.setContentsMargins(0, 0, 0, 0)
+        h_meta.addWidget(self.edit_tinyol_meta)
+        h_meta.addWidget(self.btn_tinyol_browse_meta)
+
+        self.edit_tinyol_data_dir = QLineEdit(str(Path.cwd() / "sleep" / "data_all_select"))
+        self.btn_tinyol_browse_data_dir = QPushButton("Browse...")
+        w_data = QWidget()
+        h_data = QHBoxLayout(w_data)
+        h_data.setContentsMargins(0, 0, 0, 0)
+        h_data.addWidget(self.edit_tinyol_data_dir)
+        h_data.addWidget(self.btn_tinyol_browse_data_dir)
+
+        self.edit_tinyol_output_dir = QLineEdit(str(Path.cwd() / "sleep" / "tinyol_exports"))
+        self.btn_tinyol_browse_output_dir = QPushButton("Browse...")
+        w_out = QWidget()
+        h_out = QHBoxLayout(w_out)
+        h_out.setContentsMargins(0, 0, 0, 0)
+        h_out.addWidget(self.edit_tinyol_output_dir)
+        h_out.addWidget(self.btn_tinyol_browse_output_dir)
+
+        self.edit_tinyol_log_path = QLineEdit("")
+        self.btn_tinyol_browse_log_path = QPushButton("Browse...")
+        w_log = QWidget()
+        h_log = QHBoxLayout(w_log)
+        h_log.setContentsMargins(0, 0, 0, 0)
+        h_log.addWidget(self.edit_tinyol_log_path)
+        h_log.addWidget(self.btn_tinyol_browse_log_path)
+
+        self.btn_tinyol_load_model = QPushButton("Load Active Model")
+        self.btn_tinyol_refresh_meta = QPushButton("Refresh Meta")
+        w_btn = QWidget()
+        h_btn = QHBoxLayout(w_btn)
+        h_btn.setContentsMargins(0, 0, 0, 0)
+        h_btn.addWidget(self.btn_tinyol_load_model)
+        h_btn.addWidget(self.btn_tinyol_refresh_meta)
+        h_btn.addStretch(1)
+
+        self.lbl_tinyol_model_type = QLabel("--")
+        self.lbl_tinyol_window = QLabel("--")
+        self.lbl_tinyol_channels = QLabel("--")
+        self.lbl_tinyol_features = QLabel("--")
+        self.lbl_tinyol_flags = QLabel("--")
+        self.lbl_tinyol_scope = QLabel("Dense(64) + Dense(num_classes)")
+        self.edit_tinyol_port = QLineEdit(getattr(detect, "PORT", "COM6"))
+        self.combo_tinyol_baud = QComboBox()
+        self.combo_tinyol_baud.addItems(["115200", "230400", "460800", "921600", "1000000", "1500000"])
+        baud_index = self.combo_tinyol_baud.findText(str(getattr(detect, "BAUD", 921600)))
+        if baud_index >= 0:
+            self.combo_tinyol_baud.setCurrentIndex(baud_index)
+
+        f_active.addRow("Model:", w_model)
+        f_active.addRow("Meta:", w_meta)
+        f_active.addRow("Train Log:", w_log)
+        f_active.addRow("Port:", self.edit_tinyol_port)
+        f_active.addRow("Baud:", self.combo_tinyol_baud)
+        f_active.addRow("Replay data dir:", w_data)
+        f_active.addRow("Export dir:", w_out)
+        f_active.addRow("", w_btn)
+        f_active.addRow("Model Type:", self.lbl_tinyol_model_type)
+        f_active.addRow("Windowing:", self.lbl_tinyol_window)
+        f_active.addRow("Channels:", self.lbl_tinyol_channels)
+        f_active.addRow("Feature Cols:", self.lbl_tinyol_features)
+        f_active.addRow("Flags:", self.lbl_tinyol_flags)
+        f_active.addRow("Update Scope:", self.lbl_tinyol_scope)
+        layout.addWidget(g_active)
+
+        g_class = QGroupBox("Class Selection / Confusable Recommendation")
+        f_class = QFormLayout(g_class)
+        self.combo_tinyol_target = QComboBox()
+        self.combo_tinyol_target.setEnabled(False)
+        self.tbl_tinyol_classes = QTableWidget(0, 4)
+        self.tbl_tinyol_classes.setHorizontalHeaderLabels(["ID", "Name", "Prefix", "Error Rank"])
+        self.tbl_tinyol_classes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_tinyol_classes.setMinimumHeight(220)
+
+        self.tbl_tinyol_confusable = QTableWidget(0, 4)
+        self.tbl_tinyol_confusable.setHorizontalHeaderLabels(["Rank", "ID", "Name", "Source"])
+        self.tbl_tinyol_confusable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_tinyol_confusable.setMinimumHeight(140)
+
+        self.btn_tinyol_recommend = QPushButton("Auto Recommend Confusables")
+        self.btn_tinyol_recommend.setEnabled(False)
+        self.lbl_tinyol_label_json = QLabel("--")
+
+        f_class.addRow("Target Class:", self.combo_tinyol_target)
+        f_class.addRow("Class Map:", self.tbl_tinyol_classes)
+        f_class.addRow("Prefix Mapping Source:", self.lbl_tinyol_label_json)
+        f_class.addRow("", self.btn_tinyol_recommend)
+        f_class.addRow("Recommended Confusables:", self.tbl_tinyol_confusable)
+        layout.addWidget(g_class)
+
+        g_session = QGroupBox("Session / Board-Equivalent OL Config")
+        f_session = QFormLayout(g_session)
+        self.lbl_tinyol_session_id = QLabel("--")
+        self.lbl_tinyol_session_status = QLabel("Idle")
+        self.lbl_tinyol_session_target = QLabel("--")
+        self.lbl_tinyol_session_replay = QLabel("target=30 | confusable=3x8 | anchor=2")
+
+        self.spin_tinyol_target_windows = NoWheelSpinBox()
+        self.spin_tinyol_target_windows.setRange(1, 999)
+        self.spin_tinyol_target_windows.setValue(30)
+        self.spin_tinyol_confusable_classes = NoWheelSpinBox()
+        self.spin_tinyol_confusable_classes.setRange(1, 32)
+        self.spin_tinyol_confusable_classes.setValue(3)
+        self.spin_tinyol_confusable_windows = NoWheelSpinBox()
+        self.spin_tinyol_confusable_windows.setRange(1, 99)
+        self.spin_tinyol_confusable_windows.setValue(4)
+        self.spin_tinyol_anchor_windows = NoWheelSpinBox()
+        self.spin_tinyol_anchor_windows.setRange(0, 99)
+        self.spin_tinyol_anchor_windows.setValue(1)
+        self.spin_tinyol_batch = NoWheelSpinBox()
+        self.spin_tinyol_batch.setRange(1, 64)
+        self.spin_tinyol_batch.setValue(4)
+        self.spin_tinyol_epochs = NoWheelSpinBox()
+        self.spin_tinyol_epochs.setRange(1, 100)
+        self.spin_tinyol_epochs.setValue(8)
+        self.dsb_tinyol_lr = NoWheelDoubleSpinBox()
+        self.dsb_tinyol_lr.setDecimals(6)
+        self.dsb_tinyol_lr.setRange(0.000001, 0.01)
+        self.dsb_tinyol_lr.setValue(0.0005)
+        self.spin_tinyol_record_samples = NoWheelSpinBox()
+        self.spin_tinyol_record_samples.setRange(100, 10000)
+        self.spin_tinyol_record_samples.setValue(150)
+        self.spin_tinyol_start_offset = NoWheelSpinBox()
+        self.spin_tinyol_start_offset.setRange(0, 1000)
+        self.spin_tinyol_start_offset.setValue(30)
+
+        self.btn_tinyol_create_session = QPushButton("Create Session")
+        self.btn_tinyol_create_session.setEnabled(False)
+        self.btn_tinyol_lock_session = QPushButton("Lock Session")
+        self.btn_tinyol_lock_session.setEnabled(False)
+        self.btn_tinyol_reset_session = QPushButton("Reset Session")
+        self.btn_tinyol_reset_session.setEnabled(False)
+
+        w_session_btn = QWidget()
+        h_session_btn = QHBoxLayout(w_session_btn)
+        h_session_btn.setContentsMargins(0, 0, 0, 0)
+        h_session_btn.addWidget(self.btn_tinyol_create_session)
+        h_session_btn.addWidget(self.btn_tinyol_lock_session)
+        h_session_btn.addWidget(self.btn_tinyol_reset_session)
+        h_session_btn.addStretch(1)
+
+        f_session.addRow("Session ID:", self.lbl_tinyol_session_id)
+        f_session.addRow("Status:", self.lbl_tinyol_session_status)
+        f_session.addRow("Target:", self.lbl_tinyol_session_target)
+        f_session.addRow("Replay Policy:", self.lbl_tinyol_session_replay)
+        f_session.addRow("Target Windows:", self.spin_tinyol_target_windows)
+        f_session.addRow("Confusable Class Count:", self.spin_tinyol_confusable_classes)
+        f_session.addRow("Confusable Windows/Class:", self.spin_tinyol_confusable_windows)
+        f_session.addRow("Anchor Windows/Class:", self.spin_tinyol_anchor_windows)
+        f_session.addRow("Batch Size:", self.spin_tinyol_batch)
+        f_session.addRow("Epochs:", self.spin_tinyol_epochs)
+        f_session.addRow("Learning Rate:", self.dsb_tinyol_lr)
+        f_session.addRow("Record Samples:", self.spin_tinyol_record_samples)
+        f_session.addRow("Window Start Offset:", self.spin_tinyol_start_offset)
+        f_session.addRow("", w_session_btn)
+        layout.addWidget(g_session)
+
+        g_ops = QGroupBox("Target Recording / Replay / Validation")
+        f_ops = QFormLayout(g_ops)
+        self.lbl_tinyol_recording = QLabel("Not recording")
+        self.lbl_tinyol_validation = QLabel("Pending")
+        self.btn_tinyol_start_record = QPushButton("Start Record")
+        self.btn_tinyol_start_record.setEnabled(False)
+        self.btn_tinyol_stop_record = QPushButton("Stop Record")
+        self.btn_tinyol_stop_record.setEnabled(False)
+        self.btn_tinyol_build_replay = QPushButton("Build Replay")
+        self.btn_tinyol_build_replay.setEnabled(False)
+        self.btn_tinyol_run_ol = QPushButton("Run OL")
+        self.btn_tinyol_run_ol.setEnabled(False)
+        self.btn_tinyol_validate = QPushButton("Run Validation")
+        self.btn_tinyol_validate.setEnabled(False)
+        self.btn_tinyol_export_mcu = QPushButton("Export MCU Files")
+        self.btn_tinyol_export_mcu.setEnabled(False)
+
+        w_record = QWidget()
+        h_record = QHBoxLayout(w_record)
+        h_record.setContentsMargins(0, 0, 0, 0)
+        h_record.addWidget(self.btn_tinyol_start_record)
+        h_record.addWidget(self.btn_tinyol_stop_record)
+        h_record.addStretch(1)
+
+        w_ops = QWidget()
+        h_ops = QHBoxLayout(w_ops)
+        h_ops.setContentsMargins(0, 0, 0, 0)
+        h_ops.addWidget(self.btn_tinyol_build_replay)
+        h_ops.addWidget(self.btn_tinyol_run_ol)
+        h_ops.addWidget(self.btn_tinyol_validate)
+        h_ops.addWidget(self.btn_tinyol_export_mcu)
+        h_ops.addStretch(1)
+
+        f_ops.addRow("Recording:", self.lbl_tinyol_recording)
+        f_ops.addRow("", w_record)
+        f_ops.addRow("Validation:", self.lbl_tinyol_validation)
+        f_ops.addRow("", w_ops)
+        layout.addWidget(g_ops)
+        layout.addStretch(1)
+
+        self._tinyol_meta: Dict[str, Any] = {}
+        self._tinyol_prefix_map: Dict[int, str] = {}
+        self._tinyol_session: Dict[str, Any] = {}
+        self._tinyol_recording = False
+
+        self.btn_tinyol_browse_model.clicked.connect(self.on_tinyol_browse_model)
+        self.btn_tinyol_browse_meta.clicked.connect(self.on_tinyol_browse_meta)
+        self.btn_tinyol_browse_log_path.clicked.connect(self.on_tinyol_browse_log_path)
+        self.btn_tinyol_browse_data_dir.clicked.connect(self.on_tinyol_browse_data_dir)
+        self.btn_tinyol_browse_output_dir.clicked.connect(self.on_tinyol_browse_output_dir)
+        self.btn_tinyol_load_model.clicked.connect(self.on_tinyol_load_model)
+        self.btn_tinyol_refresh_meta.clicked.connect(self.on_tinyol_refresh_meta)
+        self.btn_tinyol_recommend.clicked.connect(self.on_tinyol_recommend_confusables)
+        self.btn_tinyol_create_session.clicked.connect(self.on_tinyol_create_session)
+        self.btn_tinyol_lock_session.clicked.connect(self.on_tinyol_lock_session)
+        self.btn_tinyol_reset_session.clicked.connect(self.on_tinyol_reset_session)
+        self.btn_tinyol_start_record.clicked.connect(self.on_tinyol_start_record)
+        self.btn_tinyol_stop_record.clicked.connect(self.on_tinyol_stop_record)
+        self.btn_tinyol_build_replay.clicked.connect(self.on_tinyol_build_replay)
+        self.btn_tinyol_run_ol.clicked.connect(self.on_tinyol_run_ol)
+        self.btn_tinyol_validate.clicked.connect(self.on_tinyol_validate)
+        self.btn_tinyol_export_mcu.clicked.connect(self.on_tinyol_export_mcu)
+        self.combo_tinyol_target.currentIndexChanged.connect(self.on_tinyol_target_changed)
 
     def _build_gencode_cnn_tab(self):
         layout = QVBoxLayout(self.tab_gencode_cnn)
@@ -3683,6 +4368,957 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Select dynamic gestures JSON", "", "JSON (*.json);;All files (*.*)")
         if path:
             self.edit_dynamic_json.setText(path)
+
+    def on_tinyol_browse_model(self):
+        filter_str = "Model Files (*.keras *.h5 *.pkl);;Keras V3 (*.keras);;H5 (*.h5);;Pickle (*.pkl);;All files (*.*)"
+        path, _ = QFileDialog.getOpenFileName(self, "Select TinyOL model file", "", filter_str)
+        if path:
+            self.edit_tinyol_model.setText(path)
+
+    def on_tinyol_browse_meta(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select TinyOL meta (.pkl)", "", "Pickle (*.pkl);;All files (*.*)")
+        if path:
+            self.edit_tinyol_meta.setText(path)
+
+    def on_tinyol_browse_log_path(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select TinyOL train log", "", "Text (*.txt *.log);;All files (*.*)")
+        if path:
+            self.edit_tinyol_log_path.setText(path)
+
+    def on_tinyol_browse_data_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Replay Data Directory")
+        if path:
+            self.edit_tinyol_data_dir.setText(path)
+
+    def on_tinyol_browse_output_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Select TinyOL Export Directory")
+        if path:
+            self.edit_tinyol_output_dir.setText(path)
+
+    def _tinyol_load_meta(self) -> Optional[Dict[str, Any]]:
+        path = self.edit_tinyol_meta.text().strip()
+        if not path or not os.path.exists(path):
+            QMessageBox.warning(self, "TinyOL", f"meta not found: {path}")
+            return None
+        try:
+            meta = joblib.load(path)
+        except Exception as e:
+            QMessageBox.critical(self, "TinyOL", f"Failed to load meta:\n{e}")
+            return None
+        if not isinstance(meta, dict):
+            QMessageBox.critical(self, "TinyOL", "meta format invalid (expected dict).")
+            return None
+        return meta
+
+    def _tinyol_find_matching_labels_json(self, id_to_name: Dict[int, str]):
+        log_source, log_prefix_map = self._tinyol_extract_prefix_map_from_log()
+        if log_prefix_map:
+            return log_source, log_prefix_map
+
+        inferred_source, inferred_prefix_map = self._tinyol_infer_prefix_map_from_meta(id_to_name)
+        if inferred_prefix_map:
+            return inferred_source, inferred_prefix_map
+
+        target_names = [str(id_to_name[k]) for k in sorted(id_to_name)]
+        for candidate in Path.cwd().rglob("*label*.json"):
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            defs = payload.get("label_defs")
+            if not isinstance(defs, list):
+                continue
+            by_id = {}
+            prefix_map: Dict[int, str] = {}
+            for item in defs:
+                try:
+                    item_id = int(item["id"])
+                    by_id[item_id] = str(item["name"])
+                    prefix_map[item_id] = str(item["prefix"])
+                except Exception:
+                    pass
+            candidate_names = [by_id[k] for k in sorted(by_id)]
+            if candidate_names == target_names:
+                return str(candidate), prefix_map
+        return None, {}
+
+    def _tinyol_infer_prefix_map_from_meta(self, id_to_name: Dict[int, str]):
+        data_dir_text = self.edit_tinyol_data_dir.text().strip()
+        data_dir = Path(data_dir_text) if data_dir_text else None
+        if not data_dir or not data_dir.exists():
+            meta_path_text = self.edit_tinyol_meta.text().strip()
+            if meta_path_text:
+                candidate_dir = Path(meta_path_text).parent
+                if candidate_dir.exists():
+                    data_dir = candidate_dir
+        if not data_dir or not data_dir.exists():
+            return None, {}
+
+        prefix_map: Dict[int, str] = {}
+        for class_id in sorted(id_to_name):
+            class_name = str(id_to_name[class_id]).strip()
+            candidates: List[str] = []
+            for value in (class_name, str(class_id)):
+                value = str(value).strip()
+                if value and value not in candidates:
+                    candidates.append(value)
+            for prefix in candidates:
+                if any(data_dir.glob(f"{prefix}-*.csv")):
+                    prefix_map[int(class_id)] = prefix
+                    break
+        if not prefix_map:
+            return None, {}
+        return f"meta-data-dir:{data_dir}", prefix_map
+
+    def _tinyol_extract_prefix_map_from_log(self):
+        manual_log_path = self.edit_tinyol_log_path.text().strip()
+        if manual_log_path:
+            log_path = Path(manual_log_path)
+        else:
+            meta_path = Path(self.edit_tinyol_meta.text().strip())
+            log_path = meta_path.parent / "log.txt"
+        if not log_path.exists():
+            return None, {}
+
+        text = ""
+        for encoding in ("utf-8", "cp950", "utf-8-sig"):
+            try:
+                text = log_path.read_text(encoding=encoding)
+                break
+            except Exception:
+                continue
+        if not text:
+            return None, {}
+
+        prefix_map: Dict[int, str] = {}
+        counts_pattern = re.compile(r"\[SCAN\]\s+label '([^']+)'\s+\(([^)]+)\):")
+        error_pattern = re.compile(r"動作 \[(.*?)\].*?data_all_select\\([^-\\]+)-")
+        id_to_name = self._tinyol_meta.get("id_to_name", {})
+        name_to_id = {str(v): int(k) for k, v in id_to_name.items()}
+
+        for line in text.splitlines():
+            m = counts_pattern.search(line)
+            if m:
+                prefix, name = m.groups()
+                class_id = name_to_id.get(name.strip())
+                if class_id is not None:
+                    prefix_map[int(class_id)] = str(prefix).strip()
+
+        if not prefix_map:
+            current_name = None
+            section_pattern = re.compile(r"動作 \[(.*?)\] 被誤判為")
+            file_pattern = re.compile(r"data_all_select\\([^-\\]+)-")
+            for line in text.splitlines():
+                sec = section_pattern.search(line)
+                if sec:
+                    current_name = sec.group(1).strip()
+                    continue
+                file_match = file_pattern.search(line)
+                if current_name and file_match:
+                    class_id = name_to_id.get(current_name)
+                    if class_id is not None and class_id not in prefix_map:
+                        prefix_map[int(class_id)] = file_match.group(1).strip()
+
+        return str(log_path), prefix_map
+
+    def _tinyol_error_prefix_counts(self) -> Counter:
+        data_dir = Path(self.edit_tinyol_data_dir.text().strip())
+        error_dir = data_dir / "error 分析"
+        counts: Counter = Counter()
+        if not error_dir.exists():
+            return counts
+        for path in error_dir.glob("*.csv"):
+            prefix = path.stem.split("-")[0].strip()
+            if prefix:
+                counts[prefix] += 1
+        return counts
+
+    def _tinyol_refresh_meta_ui(self, meta: Dict[str, Any]):
+        self._tinyol_meta = meta
+        windowing = meta.get("windowing", {})
+        id_to_name = meta.get("id_to_name", {})
+        self.lbl_tinyol_model_type.setText(str(meta.get("model_type", "--")))
+        self.lbl_tinyol_window.setText(
+            f"len={windowing.get('window_len', '--')} | step={windowing.get('window_step', '--')}"
+        )
+        self.lbl_tinyol_channels.setText(", ".join(str(v) for v in meta.get("channels", [])) or "--")
+        self.lbl_tinyol_features.setText(", ".join(meta.get("feature_cols", [])) or "--")
+        self.lbl_tinyol_flags.setText(json.dumps(meta.get("flags", {}), ensure_ascii=False))
+
+        label_json_path, prefix_map = self._tinyol_find_matching_labels_json(id_to_name)
+        self._tinyol_prefix_map = prefix_map
+        self.lbl_tinyol_label_json.setText(label_json_path or "No prefix mapping found")
+
+        self.combo_tinyol_target.blockSignals(True)
+        self.combo_tinyol_target.clear()
+        self.tbl_tinyol_classes.setRowCount(0)
+        for row, class_id in enumerate(sorted(id_to_name)):
+            name = str(id_to_name[class_id])
+            prefix = prefix_map.get(class_id, "--")
+            self.combo_tinyol_target.addItem(f"{class_id}: {name}", class_id)
+            self.tbl_tinyol_classes.insertRow(row)
+            self.tbl_tinyol_classes.setItem(row, 0, QTableWidgetItem(str(class_id)))
+            self.tbl_tinyol_classes.setItem(row, 1, QTableWidgetItem(name))
+            self.tbl_tinyol_classes.setItem(row, 2, QTableWidgetItem(prefix))
+            self.tbl_tinyol_classes.setItem(row, 3, QTableWidgetItem("--"))
+        self.combo_tinyol_target.blockSignals(False)
+        enabled = self.combo_tinyol_target.count() > 0
+        self.combo_tinyol_target.setEnabled(enabled)
+        self.btn_tinyol_recommend.setEnabled(enabled)
+        self.btn_tinyol_create_session.setEnabled(enabled)
+        self.btn_tinyol_reset_session.setEnabled(enabled)
+        self.append_log(_tag_line("TINYOL", f"Loaded meta with {len(id_to_name)} classes."))
+
+    def _tinyol_recommend_confusables(self, target_id: int) -> List[dict]:
+        id_to_name = self._tinyol_meta.get("id_to_name", {})
+        counts = self._tinyol_error_prefix_counts()
+        prefix_to_id = {v: k for k, v in self._tinyol_prefix_map.items()}
+        target_prefix = self._tinyol_prefix_map.get(target_id)
+        results: List[dict] = []
+        if counts and prefix_to_id:
+            for prefix, count in counts.most_common():
+                mapped_id = prefix_to_id.get(prefix)
+                if mapped_id is None or mapped_id == target_id or prefix == target_prefix:
+                    continue
+                results.append({
+                    "id": mapped_id,
+                    "name": str(id_to_name.get(mapped_id, f"cl{mapped_id}")),
+                    "source": f"error-analysis:{prefix}:{count}",
+                    "score": count,
+                })
+                if len(results) >= int(self.spin_tinyol_confusable_classes.value()):
+                    break
+        if not results:
+            all_ids = [k for k in sorted(id_to_name) if k != target_id]
+            for mapped_id in all_ids[:int(self.spin_tinyol_confusable_classes.value())]:
+                results.append({
+                    "id": mapped_id,
+                    "name": str(id_to_name.get(mapped_id, f"cl{mapped_id}")),
+                    "source": "fallback:id-order",
+                    "score": 0,
+                })
+        return results
+
+    def _tinyol_fill_confusable_table(self, rows: List[dict]):
+        self.tbl_tinyol_confusable.setRowCount(0)
+        for idx, item in enumerate(rows, start=1):
+            row = self.tbl_tinyol_confusable.rowCount()
+            self.tbl_tinyol_confusable.insertRow(row)
+            self.tbl_tinyol_confusable.setItem(row, 0, QTableWidgetItem(str(idx)))
+            self.tbl_tinyol_confusable.setItem(row, 1, QTableWidgetItem(str(item["id"])))
+            self.tbl_tinyol_confusable.setItem(row, 2, QTableWidgetItem(item["name"]))
+            self.tbl_tinyol_confusable.setItem(row, 3, QTableWidgetItem(item["source"]))
+
+    def _tinyol_selected_confusable_ids(self) -> List[int]:
+        ids: List[int] = []
+        for row in range(self.tbl_tinyol_confusable.rowCount()):
+            item = self.tbl_tinyol_confusable.item(row, 1)
+            if not item:
+                continue
+            try:
+                ids.append(int(item.text().strip()))
+            except Exception:
+                continue
+        return ids
+
+    def _tinyol_extract_window_from_source_csv(self, csv_path: Path, label_name: str, label_id: int, output_path: Path) -> bool:
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception:
+            return False
+
+        start = int(self.spin_tinyol_start_offset.value())
+        window_len = int(self._tinyol_meta.get("windowing", {}).get("window_len", 100))
+        end = start + window_len
+        if len(df) < end:
+            return False
+
+        sub = df.iloc[start:end].copy()
+        sub["GESTURE"] = label_name
+        sub["TARGET_ID"] = label_id
+        if "SEQ" not in sub.columns:
+            sub.insert(0, "SEQ", range(window_len))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        sub.to_csv(output_path, index=False, encoding="utf-8")
+        return True
+
+    def on_tinyol_load_model(self):
+        meta = self._tinyol_load_meta()
+        if meta is None:
+            return
+        self._tinyol_reset_session_state(keep_meta=False)
+        self._tinyol_refresh_meta_ui(meta)
+
+    def on_tinyol_refresh_meta(self):
+        self.on_tinyol_load_model()
+
+    def _tinyol_reset_session_state(self, keep_meta: bool = True):
+        self._tinyol_session = {}
+        self._tinyol_recording = False
+        self.combo_tinyol_target.setEnabled(self.combo_tinyol_target.count() > 0)
+        self.spin_tinyol_target_windows.setEnabled(True)
+        self.spin_tinyol_confusable_classes.setEnabled(True)
+        self.spin_tinyol_confusable_windows.setEnabled(True)
+        self.spin_tinyol_anchor_windows.setEnabled(True)
+        self.spin_tinyol_batch.setEnabled(True)
+        self.spin_tinyol_epochs.setEnabled(True)
+        self.dsb_tinyol_lr.setEnabled(True)
+        self.spin_tinyol_record_samples.setEnabled(True)
+        self.spin_tinyol_start_offset.setEnabled(True)
+        self.btn_tinyol_create_session.setEnabled(self.combo_tinyol_target.count() > 0)
+        self.btn_tinyol_lock_session.setEnabled(False)
+        self.btn_tinyol_reset_session.setEnabled(self.combo_tinyol_target.count() > 0)
+        self.btn_tinyol_start_record.setEnabled(False)
+        self.btn_tinyol_stop_record.setEnabled(False)
+        self.btn_tinyol_build_replay.setEnabled(False)
+        self.btn_tinyol_run_ol.setEnabled(False)
+        self.btn_tinyol_validate.setEnabled(False)
+        self.btn_tinyol_export_mcu.setEnabled(False)
+        self.lbl_tinyol_session_id.setText("--")
+        self.lbl_tinyol_session_status.setText("Idle")
+        self.lbl_tinyol_session_target.setText(self.combo_tinyol_target.currentText() if self.combo_tinyol_target.count() > 0 else "--")
+        self.lbl_tinyol_session_replay.setText("--")
+        self.lbl_tinyol_recording.setText("Idle")
+        self.lbl_tinyol_validation.setText("Pending")
+        self.tbl_tinyol_confusable.setRowCount(0)
+        if not keep_meta:
+            self._tinyol_prefix_map = {}
+
+    def on_tinyol_reset_session(self):
+        if self.thread_tinyol_record is not None or self.thread_tinyol_train is not None:
+            QMessageBox.warning(self, "TinyOL", "Please wait for the current TinyOL task to finish first.")
+            return
+        self._tinyol_reset_session_state(keep_meta=True)
+        self.append_log(_tag_line("TINYOL", "Session reset. You can choose another target class now."))
+
+    def on_tinyol_target_changed(self):
+        self.tbl_tinyol_confusable.setRowCount(0)
+        self.btn_tinyol_build_replay.setEnabled(False)
+        if self.combo_tinyol_target.currentIndex() >= 0:
+            self.lbl_tinyol_session_target.setText(self.combo_tinyol_target.currentText())
+
+    def _tinyol_can_build_replay(self) -> bool:
+        if not self._tinyol_session:
+            return False
+        target_count = len(self._tinyol_session.get("target_window_csvs", []))
+        if target_count <= 0:
+            return False
+        id_to_name = self._tinyol_meta.get("id_to_name", {}) if self._tinyol_meta else {}
+        target_id = int(self._tinyol_session.get("target_id", -1))
+        anchor_ids = [idx for idx in sorted(id_to_name) if idx != target_id]
+        has_confusable = self.tbl_tinyol_confusable.rowCount() > 0
+        has_anchor = bool(anchor_ids) and int(self.spin_tinyol_anchor_windows.value()) > 0
+        return has_confusable or has_anchor
+
+    def on_tinyol_recommend_confusables(self):
+        if self.combo_tinyol_target.currentIndex() < 0:
+            QMessageBox.warning(self, "TinyOL", "Please select a target class first.")
+            return
+        target_id = int(self.combo_tinyol_target.currentData())
+        rows = self._tinyol_recommend_confusables(target_id)
+        self._tinyol_fill_confusable_table(rows)
+        self.btn_tinyol_build_replay.setEnabled(self._tinyol_can_build_replay())
+        self.append_log(_tag_line("TINYOL", f"Recommended {len(rows)} confusable classes for target={target_id}."))
+
+    def on_tinyol_create_session(self):
+        if self.combo_tinyol_target.currentIndex() < 0 or not self._tinyol_meta:
+            QMessageBox.warning(self, "TinyOL", "Load meta and choose a target class first.")
+            return
+        target_id = int(self.combo_tinyol_target.currentData())
+        session_id = datetime.now().strftime("tinyol_%Y%m%d_%H%M%S")
+        self._tinyol_session = {
+            "session_id": session_id,
+            "target_id": target_id,
+            "target_name": self.combo_tinyol_target.currentText(),
+            "window_len": self._tinyol_meta.get("windowing", {}).get("window_len"),
+            "window_step": self._tinyol_meta.get("windowing", {}).get("window_step"),
+            "target_windows": int(self.spin_tinyol_target_windows.value()),
+            "confusable_classes": int(self.spin_tinyol_confusable_classes.value()),
+            "confusable_windows": int(self.spin_tinyol_confusable_windows.value()),
+            "anchor_windows": int(self.spin_tinyol_anchor_windows.value()),
+            "batch_size": int(self.spin_tinyol_batch.value()),
+            "epochs": int(self.spin_tinyol_epochs.value()),
+            "learning_rate": float(self.dsb_tinyol_lr.value()),
+            "record_samples": int(self.spin_tinyol_record_samples.value()),
+            "start_offset": int(self.spin_tinyol_start_offset.value()),
+            "target_window_csvs": [],
+            "target_raw_csvs": [],
+            "replay_window_csvs": [],
+            "validation": {},
+        }
+        self.lbl_tinyol_session_id.setText(session_id)
+        self.lbl_tinyol_session_status.setText("SessionReady")
+        self.lbl_tinyol_session_target.setText(self.combo_tinyol_target.currentText())
+        self.btn_tinyol_lock_session.setEnabled(True)
+        self.btn_tinyol_reset_session.setEnabled(True)
+        self.btn_tinyol_start_record.setEnabled(True)
+        self.append_log(_tag_line("TINYOL", f"Created session {session_id} for {self.combo_tinyol_target.currentText()}."))
+
+    def _build_tinyol_record_cfg(self) -> TinyOlRecordCfg:
+        if not self._tinyol_session:
+            raise RuntimeError("TinyOL session is empty.")
+        return TinyOlRecordCfg(
+            port=self.edit_tinyol_port.text().strip(),
+            baud=int(self.combo_tinyol_baud.currentText()),
+            output_dir=str(Path(self.edit_tinyol_output_dir.text().strip()) / str(self._tinyol_session["session_id"])),
+            session_id=str(self._tinyol_session["session_id"]),
+            segment_index=len(self._tinyol_session.get("target_raw_csvs", [])) + 1,
+            target_id=int(self._tinyol_session["target_id"]),
+            target_name=str(self._tinyol_meta.get("id_to_name", {}).get(int(self._tinyol_session["target_id"]), self._tinyol_session["target_name"])),
+            record_samples=int(self.spin_tinyol_record_samples.value()),
+            start_offset=int(self.spin_tinyol_start_offset.value()),
+            window_len=int(self._tinyol_session.get("window_len") or self._tinyol_meta.get("windowing", {}).get("window_len", 100)),
+            channels=[int(ch) for ch in self._tinyol_meta.get("channels", [])],
+            use_manual_holdavg=bool(self.chk_use_manual.isChecked()),
+            manual_holdavg=self._read_ch_table_int_map(self.tbl_hold),
+            std_baseline_a=self._read_ch_table_int_map(self.tbl_base_a),
+            std_holdavg_a=self._read_ch_table_int_map(self.tbl_hold_a),
+        )
+
+    def _validate_tinyol_record_cfg(self, cfg: TinyOlRecordCfg) -> Optional[str]:
+        if not cfg.port:
+            return "TinyOL PORT is empty"
+        if not cfg.output_dir:
+            return "TinyOL output dir is empty"
+        if cfg.start_offset < 0:
+            return "TinyOL start offset must be >= 0"
+        if cfg.window_len <= 0:
+            return "TinyOL window_len must be > 0"
+        if cfg.record_samples < (cfg.start_offset + cfg.window_len):
+            return f"record_samples must be >= start_offset + window_len ({cfg.start_offset + cfg.window_len})"
+        return None
+
+    def on_tinyol_lock_session(self):
+        if not self._tinyol_session:
+            QMessageBox.warning(self, "TinyOL", "Create a session first.")
+            return
+        self.combo_tinyol_target.setEnabled(False)
+        self.spin_tinyol_target_windows.setEnabled(False)
+        self.spin_tinyol_confusable_classes.setEnabled(False)
+        self.spin_tinyol_confusable_windows.setEnabled(False)
+        self.spin_tinyol_anchor_windows.setEnabled(False)
+        self.spin_tinyol_batch.setEnabled(False)
+        self.spin_tinyol_epochs.setEnabled(False)
+        self.dsb_tinyol_lr.setEnabled(False)
+        self.spin_tinyol_record_samples.setEnabled(False)
+        self.spin_tinyol_start_offset.setEnabled(False)
+        self.btn_tinyol_lock_session.setEnabled(False)
+        self.lbl_tinyol_session_status.setText("Locked")
+        self.append_log(_tag_line("TINYOL", f"Locked session {self._tinyol_session['session_id']}."))
+
+    def on_tinyol_start_record(self):
+        if self.thread_tinyol_record is not None:
+            return
+        if not self._tinyol_session:
+            QMessageBox.warning(self, "TinyOL", "Create and lock a session first.")
+            return
+        cfg = self._build_tinyol_record_cfg()
+        err = self._validate_tinyol_record_cfg(cfg)
+        if err:
+            QMessageBox.warning(self, "TinyOL", err)
+            return
+
+        self._tinyol_recording = True
+        self.lbl_tinyol_recording.setText(
+            f"Recording target raw rows ({cfg.record_samples} samples target)"
+        )
+        self.btn_tinyol_start_record.setEnabled(False)
+        self.btn_tinyol_stop_record.setEnabled(True)
+        self.append_log(_tag_line("TINYOL", f"Target recording started via UART {cfg.port} @ {cfg.baud}."))
+
+        self.stop_event_tinyol_record = threading.Event()
+        self.thread_tinyol_record = QThread()
+        self.worker_tinyol_record = TinyOlRecordWorker(cfg, self.stop_event_tinyol_record)
+        self.worker_tinyol_record.moveToThread(self.thread_tinyol_record)
+        self.thread_tinyol_record.started.connect(self.worker_tinyol_record.run)
+        self.worker_tinyol_record.log_line.connect(self.append_log)
+        self.worker_tinyol_record.progress.connect(self.on_tinyol_record_progress)
+        self.worker_tinyol_record.finished_ok.connect(self.on_tinyol_record_ok)
+        self.worker_tinyol_record.finished_err.connect(self.on_tinyol_record_err)
+        self.worker_tinyol_record.finished_ok.connect(self.thread_tinyol_record.quit)
+        self.worker_tinyol_record.finished_err.connect(self.thread_tinyol_record.quit)
+        self.thread_tinyol_record.finished.connect(self.on_tinyol_record_thread_finished)
+        self.thread_tinyol_record.start()
+
+    def on_tinyol_stop_record(self):
+        if self.thread_tinyol_record is None:
+            return
+        self._tinyol_recording = False
+        self.lbl_tinyol_recording.setText("Stopping UART capture...")
+        self.btn_tinyol_stop_record.setEnabled(False)
+        self.stop_event_tinyol_record.set()
+        self.append_log(_tag_line("TINYOL", "Stop TinyOL UART record requested."))
+
+    def on_tinyol_record_progress(self, count: int):
+        self.lbl_tinyol_recording.setText(f"Recording... {count} rows captured")
+
+    def on_tinyol_record_ok(self, res: dict):
+        self._tinyol_recording = False
+        raw_csv = res.get("raw_csv", "")
+        window_csv = res.get("window_csv", "")
+        if self._tinyol_session:
+            if raw_csv:
+                self._tinyol_session.setdefault("target_raw_csvs", []).append(raw_csv)
+            if window_csv:
+                self._tinyol_session.setdefault("target_window_csvs", []).append(window_csv)
+        collected = len(self._tinyol_session.get("target_window_csvs", [])) if self._tinyol_session else 0
+        target_goal = int(self.spin_tinyol_target_windows.value())
+        self.lbl_tinyol_recording.setText(f"Captured {res.get('rows', 0)} rows | target windows {collected}/{target_goal}")
+        self.btn_tinyol_start_record.setEnabled(True)
+        self.btn_tinyol_build_replay.setEnabled(self._tinyol_can_build_replay())
+        msg = f"UART record saved.\n\nRaw CSV:\n{raw_csv}"
+        if window_csv:
+            msg += f"\n\nWindow CSV:\n{window_csv}"
+        QMessageBox.information(self, "TinyOL Record", msg)
+        self.append_log(_tag_line("TINYOL", f"Record complete: raw={raw_csv} window={window_csv}"))
+
+    def on_tinyol_record_err(self, err: str):
+        self._tinyol_recording = False
+        self.lbl_tinyol_recording.setText("Record failed")
+        self.btn_tinyol_start_record.setEnabled(True)
+        self.append_log(_tag_line("TINYOL", f"=== RECORD ERROR === {err}"))
+        QMessageBox.critical(self, "TinyOL Record", err)
+
+    def on_tinyol_record_thread_finished(self):
+        self.btn_tinyol_stop_record.setEnabled(False)
+        self.thread_tinyol_record = None
+        self.worker_tinyol_record = None
+
+    def on_tinyol_train_ok(self, res: dict):
+        if self._tinyol_session is not None:
+            self._tinyol_session["validation"] = res
+            self._tinyol_session["candidate_model_path"] = res.get("candidate_model_path", "")
+        self.lbl_tinyol_validation.setText(
+            f"{res.get('decision', 'Pending')} | target recall Δ={res.get('target_recall_delta', 0.0):+.3f} | acc Δ={res.get('overall_acc_delta', 0.0):+.3f}"
+        )
+        self.btn_tinyol_validate.setEnabled(True)
+        self.btn_tinyol_export_mcu.setEnabled(True)
+        self.append_log(_tag_line("TINYOL", f"=== OL DONE === {self.lbl_tinyol_validation.text()}"))
+
+    def on_tinyol_train_err(self, err: str):
+        self.append_log(_tag_line("TINYOL", f"=== OL ERROR === {err}"))
+        QMessageBox.critical(self, "TinyOL Train", err)
+        self.btn_tinyol_run_ol.setEnabled(True)
+
+    def on_tinyol_train_thread_finished(self):
+        self.thread_tinyol_train = None
+        self.worker_tinyol_train = None
+        if self._tinyol_session and not self._tinyol_session.get("validation"):
+            self.btn_tinyol_run_ol.setEnabled(True)
+
+    def on_tinyol_build_replay(self):
+        if not self._tinyol_session:
+            QMessageBox.warning(self, "TinyOL", "Create and lock a session first.")
+            return
+        target_count = len(self._tinyol_session.get("target_window_csvs", []))
+        if target_count <= 0:
+            QMessageBox.warning(self, "TinyOL", "Please record at least one target window first.")
+            return
+
+        data_dir = Path(self.edit_tinyol_data_dir.text().strip())
+        if not data_dir.exists():
+            QMessageBox.warning(self, "TinyOL", f"Replay data dir not found: {data_dir}")
+            return
+
+        output_dir = Path(self.edit_tinyol_output_dir.text().strip()) / self._tinyol_session["session_id"] / "replay"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        id_to_name = self._tinyol_meta.get("id_to_name", {})
+        confusable_ids = self._tinyol_selected_confusable_ids()
+        anchor_ids = [idx for idx in sorted(id_to_name) if idx not in confusable_ids and idx != int(self._tinyol_session["target_id"])]
+        rng = random.Random(42)
+        replay_paths: List[str] = []
+        manifest: List[dict] = []
+
+        def pick_for_label(label_id: int, count: int, role: str):
+            prefix = self._tinyol_prefix_map.get(label_id)
+            if not prefix:
+                return
+            files = sorted(data_dir.glob(f"{prefix}-*.csv"))
+            if not files:
+                return
+            files = files.copy()
+            rng.shuffle(files)
+            chosen = files[:count]
+            for idx, src in enumerate(chosen, start=1):
+                dst = output_dir / f"{role}_cls{label_id}_{idx:03d}.csv"
+                if self._tinyol_extract_window_from_source_csv(src, str(id_to_name.get(label_id, f'cl{label_id}')), int(label_id), dst):
+                    replay_paths.append(str(dst))
+                    manifest.append({"role": role, "label_id": int(label_id), "label_name": str(id_to_name.get(label_id, f"cl{label_id}")), "source_csv": str(src), "window_csv": str(dst)})
+
+        for label_id in confusable_ids:
+            pick_for_label(int(label_id), int(self.spin_tinyol_confusable_windows.value()), "confusable")
+        for label_id in anchor_ids:
+            pick_for_label(int(label_id), int(self.spin_tinyol_anchor_windows.value()), "anchor")
+
+        self._tinyol_session["replay_window_csvs"] = replay_paths
+        manifest_path = output_dir.parent / "replay_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        summary = (
+            f"target={target_count} | "
+            f"replay={len(replay_paths)} | "
+            f"confusable={len(confusable_ids)}x{self.spin_tinyol_confusable_windows.value()} | "
+            f"anchor={self.spin_tinyol_anchor_windows.value()}"
+        )
+        self.lbl_tinyol_session_replay.setText(summary)
+        self.btn_tinyol_run_ol.setEnabled(bool(replay_paths))
+        self.append_log(_tag_line("TINYOL", f"Replay plan ready: {summary}"))
+
+    def on_tinyol_run_ol(self):
+        if self.thread_tinyol_train is not None:
+            return
+        if not self._tinyol_session:
+            QMessageBox.warning(self, "TinyOL", "Create a session first.")
+            return
+        target_windows = self._tinyol_session.get("target_window_csvs", [])
+        replay_windows = self._tinyol_session.get("replay_window_csvs", [])
+        if not target_windows:
+            QMessageBox.warning(self, "TinyOL", "No target windows recorded yet.")
+            return
+        if not replay_windows:
+            QMessageBox.warning(self, "TinyOL", "Build replay first.")
+            return
+
+        cfg = TinyOlTrainCfg(
+            model_path=self.edit_tinyol_model.text().strip(),
+            meta_path=self.edit_tinyol_meta.text().strip(),
+            output_dir=str(Path(self.edit_tinyol_output_dir.text().strip()) / self._tinyol_session["session_id"]),
+            session_id=str(self._tinyol_session["session_id"]),
+            target_id=int(self._tinyol_session["target_id"]),
+            target_name=str(self._tinyol_session["target_name"]),
+            slope_factor=float(self._tinyol_meta.get("slope_factor", 20.0)),
+            batch_size=int(self.spin_tinyol_batch.value()),
+            epochs=int(self.spin_tinyol_epochs.value()),
+            learning_rate=float(self.dsb_tinyol_lr.value()),
+            channels=[int(ch) for ch in self._tinyol_meta.get("channels", [])],
+            target_window_csvs=list(target_windows),
+            replay_window_csvs=list(replay_windows),
+        )
+
+        self.stop_event_tinyol_train = threading.Event()
+        self.thread_tinyol_train = QThread()
+        self.worker_tinyol_train = TinyOlTrainWorker(cfg, self.stop_event_tinyol_train)
+        self.worker_tinyol_train.moveToThread(self.thread_tinyol_train)
+        self.thread_tinyol_train.started.connect(self.worker_tinyol_train.run)
+        self.worker_tinyol_train.log_line.connect(self.append_log)
+        self.worker_tinyol_train.finished_ok.connect(self.on_tinyol_train_ok)
+        self.worker_tinyol_train.finished_err.connect(self.on_tinyol_train_err)
+        self.worker_tinyol_train.finished_ok.connect(self.thread_tinyol_train.quit)
+        self.worker_tinyol_train.finished_err.connect(self.thread_tinyol_train.quit)
+        self.thread_tinyol_train.finished.connect(self.on_tinyol_train_thread_finished)
+        self.thread_tinyol_train.start()
+        self.btn_tinyol_run_ol.setEnabled(False)
+        self.append_log(_tag_line("TINYOL", "Started Dense(64)+Dense(num_classes) OL training."))
+
+    def on_tinyol_validate(self):
+        report = self._tinyol_session.get("validation", {}) if self._tinyol_session else {}
+        if not report:
+            QMessageBox.warning(self, "TinyOL", "Run OL first to generate validation results.")
+            return
+        self.lbl_tinyol_validation.setText(
+            f"{report.get('decision', 'Pending')} | target recall Δ={report.get('target_recall_delta', 0.0):+.3f} | acc Δ={report.get('overall_acc_delta', 0.0):+.3f}"
+        )
+        self.btn_tinyol_export_mcu.setEnabled(True)
+        self.append_log(_tag_line("TINYOL", f"Validation summary: {self.lbl_tinyol_validation.text()}"))
+
+    def on_tinyol_export_mcu(self):
+        if not self._tinyol_session:
+            QMessageBox.warning(self, "TinyOL", "Create a session first.")
+            return
+        all_window_paths = list(self._tinyol_session.get("target_window_csvs", [])) + list(self._tinyol_session.get("replay_window_csvs", []))
+        if not all_window_paths:
+            QMessageBox.warning(self, "TinyOL", "No window CSVs available to export.")
+            return
+
+        out_dir = Path(self.edit_tinyol_output_dir.text().strip()) / self._tinyol_session["session_id"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        header_path = out_dir / "tinyol_session_windows.h"
+        source_path = out_dir / "tinyol_session_windows.c"
+        manifest_path = out_dir / "tinyol_session_manifest.json"
+
+        id_to_name = self._tinyol_meta.get("id_to_name", {})
+        channels = [int(ch) for ch in self._tinyol_meta.get("channels", [])]
+        buckets: Dict[int, List[dict]] = {int(k): [] for k in id_to_name}
+        manifest: List[dict] = []
+        for csv_path in all_window_paths:
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                continue
+            if not channels:
+                channels = [int(re.sub(r"\D", "", c)) for c in df.columns if c.startswith("ROWCH")]
+                channels = sorted(set(channels))
+            try:
+                label_id = int(df.iloc[0]["TARGET_ID"])
+            except Exception:
+                gesture = str(df.iloc[0].get("GESTURE", ""))
+                label_id = next((int(k) for k, v in id_to_name.items() if str(v) == gesture), -1)
+            if label_id < 0:
+                continue
+            rows = df[[f"ROWCH{i}" for i in channels]].astype(int).values.tolist()
+            base = [int(df.iloc[0].get(f"MOVBASE{i}", 0)) for i in channels]
+            hold = [int(df.iloc[0].get(f"HOLDAVG{i}", 0)) for i in channels]
+            buckets.setdefault(label_id, []).append({"rows": rows, "base": base, "hold": hold})
+            manifest.append({"path": csv_path, "label_id": label_id, "label_name": str(id_to_name.get(label_id, f'cl{label_id}'))})
+
+        lines_h = [
+            "#ifndef TINYOL_SESSION_WINDOWS_H",
+            "#define TINYOL_SESSION_WINDOWS_H",
+            "",
+            "#include <stdint.h>",
+            "",
+            f"#define TINYOL_WINDOW_LEN {int(self._tinyol_meta.get('windowing', {}).get('window_len', 100))}",
+            f"#define TINYOL_CHANNEL_COUNT {len(channels) if channels else 6}",
+            "",
+        ]
+        lines_c = ['#include "tinyol_session_windows.h"', ""]
+
+        for label_id in sorted(buckets):
+            samples = buckets[label_id]
+            count = len(samples)
+            lines_h.append(f"#define TINYOL_CLS_{label_id}_COUNT {count}")
+            lines_h.append(f"extern const uint16_t tinyol_cls_{label_id}_windows[TINYOL_CLS_{label_id}_COUNT][TINYOL_WINDOW_LEN][TINYOL_CHANNEL_COUNT];")
+            lines_h.append(f"extern const uint16_t tinyol_cls_{label_id}_base[TINYOL_CLS_{label_id}_COUNT][TINYOL_CHANNEL_COUNT];")
+            lines_h.append(f"extern const uint16_t tinyol_cls_{label_id}_hold[TINYOL_CLS_{label_id}_COUNT][TINYOL_CHANNEL_COUNT];")
+            lines_h.append("")
+
+            win_rows = []
+            base_rows = []
+            hold_rows = []
+            for sample in samples:
+                row_text = ",\n        ".join("{" + ", ".join(str(v) for v in row) + "}" for row in sample["rows"])
+                win_rows.append("    {\n        " + row_text + "\n    }")
+                base_rows.append("    {" + ", ".join(str(v) for v in sample["base"]) + "}")
+                hold_rows.append("    {" + ", ".join(str(v) for v in sample["hold"]) + "}")
+
+            lines_c.append(f"const uint16_t tinyol_cls_{label_id}_windows[TINYOL_CLS_{label_id}_COUNT][TINYOL_WINDOW_LEN][TINYOL_CHANNEL_COUNT] = {{")
+            lines_c.append(",\n".join(win_rows))
+            lines_c.append("};\n")
+            lines_c.append(f"const uint16_t tinyol_cls_{label_id}_base[TINYOL_CLS_{label_id}_COUNT][TINYOL_CHANNEL_COUNT] = {{")
+            lines_c.append(",\n".join(base_rows))
+            lines_c.append("};\n")
+            lines_c.append(f"const uint16_t tinyol_cls_{label_id}_hold[TINYOL_CLS_{label_id}_COUNT][TINYOL_CHANNEL_COUNT] = {{")
+            lines_c.append(",\n".join(hold_rows))
+            lines_c.append("};\n")
+
+        lines_h.append("#endif")
+        header_path.write_text("\n".join(lines_h), encoding="utf-8")
+        source_path.write_text("\n".join(lines_c), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.append_log(_tag_line("TINYOL", f"MCU export written: {header_path} | {source_path}"))
+        QMessageBox.information(self, "TinyOL Export", f"MCU files exported.\n\n{header_path}\n{source_path}")
+
+    def _tinyol_error_prefix_counts(self) -> Counter:
+        data_dir = Path(self.edit_tinyol_data_dir.text().strip())
+        counts: Counter = Counter()
+        if not data_dir.exists():
+            return counts
+        for child in data_dir.iterdir():
+            if not child.is_dir():
+                continue
+            if "error" not in child.name.lower():
+                continue
+            for path in child.glob("*.csv"):
+                prefix = path.stem.split("-")[0].strip()
+                if prefix:
+                    counts[prefix] += 1
+            break
+        return counts
+
+    def _tinyol_parse_log_confusions(self, target_name: str) -> List[dict]:
+        manual_log_path = self.edit_tinyol_log_path.text().strip()
+        if manual_log_path:
+            log_path = Path(manual_log_path)
+        else:
+            meta_path = Path(self.edit_tinyol_meta.text().strip())
+            log_path = meta_path.parent / "log.txt"
+        if not log_path.exists():
+            return []
+
+        pattern = re.compile(r"動作 \[(.*?)\] 被誤判為 \[(.*?)\]，共 (\d+) 次:")
+        text = ""
+        for encoding in ("utf-8", "cp950", "utf-8-sig"):
+            try:
+                text = log_path.read_text(encoding=encoding)
+                break
+            except Exception:
+                continue
+        if not text:
+            return []
+
+        rows: List[dict] = []
+        for line in text.splitlines():
+            match = pattern.search(line)
+            if not match:
+                continue
+            src_name, dst_name, count_s = match.groups()
+            if src_name.strip() != target_name.strip():
+                continue
+            rows.append({
+                "target_name": src_name.strip(),
+                "pred_name": dst_name.strip(),
+                "count": int(count_s),
+                "source": f"log.txt:{int(count_s)}",
+            })
+        rows.sort(key=lambda item: item["count"], reverse=True)
+        return rows
+
+    def _tinyol_parse_log_confusion_matrix(self) -> List[List[int]]:
+        manual_log_path = self.edit_tinyol_log_path.text().strip()
+        if manual_log_path:
+            log_path = Path(manual_log_path)
+        else:
+            meta_path = Path(self.edit_tinyol_meta.text().strip())
+            log_path = meta_path.parent / "log.txt"
+        if not log_path.exists():
+            return []
+
+        text = ""
+        for encoding in ("utf-8", "cp950", "utf-8-sig"):
+            try:
+                text = log_path.read_text(encoding=encoding)
+                break
+            except Exception:
+                continue
+        if not text:
+            return []
+
+        lines = text.splitlines()
+        start_idx = -1
+        for idx, line in enumerate(lines):
+            if "confusion_matrix" in line:
+                start_idx = idx + 1
+                break
+        if start_idx < 0:
+            return []
+
+        matrix_lines: List[str] = []
+        for line in lines[start_idx:]:
+            stripped = line.strip()
+            if not stripped:
+                if matrix_lines:
+                    break
+                continue
+            bracket_pos = stripped.find("[")
+            if bracket_pos < 0:
+                if matrix_lines:
+                    break
+                continue
+            chunk = stripped[bracket_pos:]
+            if not chunk.startswith("["):
+                if matrix_lines:
+                    break
+                continue
+            matrix_lines.append(chunk)
+            if chunk.endswith("]]"):
+                break
+        if not matrix_lines:
+            return []
+
+        rows: List[List[int]] = []
+        for raw in matrix_lines:
+            row_text = raw.strip().strip("[]").strip()
+            if not row_text:
+                continue
+            try:
+                row = [int(v) for v in row_text.split()]
+            except Exception:
+                return []
+            rows.append(row)
+        if not rows:
+            return []
+        width = len(rows[0])
+        if any(len(row) != width for row in rows):
+            return []
+        return rows
+
+    def _tinyol_recommend_confusables(self, target_id: int) -> List[dict]:
+        id_to_name = self._tinyol_meta.get("id_to_name", {})
+        results: List[dict] = []
+        target_name = str(id_to_name.get(target_id, ""))
+        name_to_id = {str(v): k for k, v in id_to_name.items()}
+
+        matrix = self._tinyol_parse_log_confusion_matrix()
+        if matrix:
+            matrix_results: List[dict] = []
+            n = min(len(matrix), len(id_to_name))
+            if 0 <= int(target_id) < n:
+                scores: Dict[int, int] = {}
+                for other_id in range(n):
+                    if other_id == int(target_id):
+                        continue
+                    outgoing = int(matrix[int(target_id)][other_id]) if other_id < len(matrix[int(target_id)]) else 0
+                    incoming = int(matrix[other_id][int(target_id)]) if int(target_id) < len(matrix[other_id]) else 0
+                    score = outgoing + incoming
+                    if score > 0:
+                        scores[other_id] = score
+                for mapped_id, score in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
+                    matrix_results.append({
+                        "id": mapped_id,
+                        "name": str(id_to_name.get(mapped_id, f"cl{mapped_id}")),
+                        "source": "log:confusion_matrix",
+                        "score": score,
+                    })
+                    if len(matrix_results) >= int(self.spin_tinyol_confusable_classes.value()):
+                        break
+            if matrix_results:
+                return matrix_results
+
+        log_rows = self._tinyol_parse_log_confusions(target_name)
+        if log_rows:
+            for item in log_rows:
+                mapped_id = name_to_id.get(item["pred_name"])
+                if mapped_id is None or mapped_id == target_id:
+                    continue
+                results.append({
+                    "id": mapped_id,
+                    "name": item["pred_name"],
+                    "source": item["source"],
+                    "score": item["count"],
+                })
+                if len(results) >= int(self.spin_tinyol_confusable_classes.value()):
+                    break
+
+        if not results:
+            manual_log_path = self.edit_tinyol_log_path.text().strip()
+            if manual_log_path:
+                return []
+            counts = self._tinyol_error_prefix_counts()
+            prefix_to_id = {v: k for k, v in self._tinyol_prefix_map.items()}
+            target_prefix = self._tinyol_prefix_map.get(target_id)
+            for prefix, count in counts.most_common():
+                mapped_id = prefix_to_id.get(prefix)
+                if mapped_id is None or mapped_id == target_id or prefix == target_prefix:
+                    continue
+                results.append({
+                    "id": mapped_id,
+                    "name": str(id_to_name.get(mapped_id, f"cl{mapped_id}")),
+                    "source": f"error-analysis-fallback:{prefix}:{count}",
+                    "score": count,
+                })
+                if len(results) >= int(self.spin_tinyol_confusable_classes.value()):
+                    break
+
+        if not results:
+            all_ids = [k for k in sorted(id_to_name) if k != target_id]
+            for mapped_id in all_ids[:int(self.spin_tinyol_confusable_classes.value())]:
+                results.append({
+                    "id": mapped_id,
+                    "name": str(id_to_name.get(mapped_id, f"cl{mapped_id}")),
+                    "source": "fallback:id-order",
+                    "score": 0,
+                })
+        return results
+
+    def on_tinyol_recommend_confusables(self):
+        if self.combo_tinyol_target.currentIndex() < 0:
+            QMessageBox.warning(self, "TinyOL", "Please select a target class first.")
+            return
+        target_id = int(self.combo_tinyol_target.currentData())
+        rows = self._tinyol_recommend_confusables(target_id)
+        self._tinyol_fill_confusable_table(rows)
+        self.btn_tinyol_build_replay.setEnabled(self._tinyol_can_build_replay())
+        self.append_log(_tag_line("TINYOL", f"Recommended {len(rows)} confusable classes for target={target_id} with log.txt priority."))
 
     def _read_ch_table_int_map(self, tbl: QTableWidget) -> Dict[int, int]:
         out: Dict[int, int] = {}
