@@ -2,6 +2,23 @@
 
 本專案提供 `ui_v6.py` 圖形介面，整合資料掃描、模型訓練、即時偵測與（後續）MCU codegen 流程。
 
+## MCU 版本狀態
+- `mcu_cnn_v2`
+  - 修改了 `v1` 多餘的 `lib`
+  - 已完成 `LEIP` 驗證
+- `mcu_cnn_v3`
+  - 已加入 `bootloader` 功能
+  - 已完成其餘 function 驗證
+  - `USB HID` 與燒錄功能待驗證
+
+## MCU v3 工作區配置
+- `mcu_cnn_v3` 目前需要將以下三個專案引入同一個 e² studio 工作區：
+  - `sil_ultra_slow_jogging - 20260109-Ver01.006`
+  - `cnn_ota_bl`
+  - `CNN_OTA_LEIP`
+
+![ota工作區範例](photo/ota工作區範例.png)
+
 ## 1. 目前重點功能
 - 訓練支援 `model_backbone` 切換：`cnn` / `ds_tcn`
 - Train 頁面可直接調 `label_smoothing`
