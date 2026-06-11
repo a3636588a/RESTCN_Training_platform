@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <ConfigurationInfoTable>
   <Version>3.0</Version>
-  <McuName>R7FA6M5BH3CFC</McuName>
+  <McuName>R7FA6M5BF3CFP</McuName>
   <McuGroup>RA6M5</McuGroup>
   <TemplateInfoTable>
     <Comment/>
@@ -94,7 +94,7 @@
         <Height>50</Height>
       </Rectangle>
       <TsInfo>
-        <Number>5</Number>
+        <Number>10</Number>
         <Resistance>560</Resistance>
         <TXRX>0</TXRX>
       </TsInfo>
@@ -135,4 +135,104 @@
       <EnableMultipleElectrodeConnection>false</EnableMultipleElectrodeConnection>
     </MethodSetting>
   </MethodInfoTable>
+  <ParameterDataTable>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>0</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>61.309105</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>1351</Threshold>
+      <Hysteresis>67</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>143</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>1</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>63.85283</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>940</Threshold>
+      <Hysteresis>47</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>152</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>2</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>63.987774</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>687</Threshold>
+      <Hysteresis>34</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>153</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>3</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>61.47104</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>1194</Threshold>
+      <Hysteresis>59</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>144</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>4</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>61.605988</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>1140</Threshold>
+      <Hysteresis>57</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>144</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>5</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>6.254723</Capacitance>
+      <DrivePulseFrequency>3.125</DrivePulseFrequency>
+      <Threshold>31</Threshold>
+      <Hysteresis>1</Hysteresis>
+      <ScanTime>0.67328</ScanTime>
+      <CTSUSSDIV>1</CTSUSSDIV>
+      <CTSUSNUM>7</CTSUSNUM>
+      <CTSUSO>76</CTSUSO>
+      <CTSUSDPA>3</CTSUSDPA>
+    </TunedData>
+    <TargetConnection>0</TargetConnection>
+    <LogFileName>l_ultra_slow_jogging_log_tuning20260611133942.log</LogFileName>
+    <Vcc>3.3</Vcc>
+    <AdvancedTunedData>
+      <MethodID>0</MethodID>
+      <CTSUATUNE12>1</CTSUATUNE12>
+      <CTSUPOSEL>0</CTSUPOSEL>
+      <CTSUTXVSEL>0</CTSUTXVSEL>
+      <JudgementType>1</JudgementType>
+    </AdvancedTunedData>
+    <MultiFrequencyMeasurement>
+      <MeasurementTimes>1</MeasurementTimes>
+      <EnableLowVoltageOperatingMode>false</EnableLowVoltageOperatingMode>
+    </MultiFrequencyMeasurement>
+  </ParameterDataTable>
 </ConfigurationInfoTable>

@@ -4,22 +4,22 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define CNN_WIN_LEN      80u
-#define CNN_CH_USED       6u
+#define CNN_WIN_LEN      35u
+#define CNN_CH_USED       5u
 #define CNN_INFER_STRIDE  3u
 #define CNN_SLOPE_FACTOR  20.00f
 
 /* CNN Input Dimensions (Level + Slope) */
-#define CNN_INPUT_CH_LEVEL   6
-#define CNN_INPUT_CH_SLOPE   6
+#define CNN_INPUT_CH_LEVEL   5
+#define CNN_INPUT_CH_SLOPE   5
 #define CNN_INPUT_CH_TOTAL   (CNN_INPUT_CH_LEVEL + CNN_INPUT_CH_SLOPE)
 
 /* Auxiliary Input Dimensions */
-#define CNN_AUX_VAR_DIM      6
+#define CNN_AUX_VAR_DIM      5
 
 typedef struct {
-    uint16_t row_buf[CNN_CH_USED][80];
-    uint16_t base_buf[CNN_CH_USED][80];
+    uint16_t row_buf[CNN_CH_USED][35];
+    uint16_t base_buf[CNN_CH_USED][35];
     uint16_t head;
     uint16_t count;
     uint16_t stride_ctr;

@@ -933,12 +933,6 @@
     </pincfg>
     <pincfg active="false" name="R7FA6M5BF3CFP.pincfg" selected="false" symbol="">
       <configSetting altId="debug0.mode.swd" configurationId="debug0.mode"/>
-      <configSetting altId="debug0.swclk.p300" configurationId="debug0.swclk"/>
-      <configSetting altId="debug0.swdio.p108" configurationId="debug0.swdio"/>
-      <configSetting altId="p108.debug0.swdio" configurationId="p108"/>
-      <configSetting altId="p108.gpio_mode.gpio_mode_peripheral" configurationId="p108.gpio_mode"/>
-      <configSetting altId="p300.debug0.swclk" configurationId="p300"/>
-      <configSetting altId="p300.gpio_mode.gpio_mode_peripheral" configurationId="p300.gpio_mode"/>
     </pincfg>
   </raPinConfiguration>
 </raConfiguration>

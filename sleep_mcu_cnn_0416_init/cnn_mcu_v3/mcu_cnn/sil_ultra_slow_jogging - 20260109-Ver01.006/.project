@@ -3,6 +3,7 @@
 	<name>sil_ultra_slow_jogging</name>
 	<comment></comment>
 	<projects>
+		<project>cnn_ota_bl</project>
 	</projects>
 	<buildSpec>
 		<buildCommand>

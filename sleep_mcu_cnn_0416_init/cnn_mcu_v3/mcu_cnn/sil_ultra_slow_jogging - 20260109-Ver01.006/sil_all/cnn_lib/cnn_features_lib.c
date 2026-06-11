@@ -51,7 +51,7 @@ bool cnn_compute_features(
     ctx->stride_ctr = 0;
     if (ctx->count < ctx->win_len) return false;
 
-    static float window_dn[CNN_CH_USED][80];
+    static float window_dn[CNN_CH_USED][35];
     for (uint16_t i = 0; i < ctx->win_len; i++) {
         uint16_t idx = (uint16_t)((ctx->head + i) % ctx->win_len);
         for (uint8_t ch = 0; ch < (uint8_t)CNN_CH_USED; ch++) {

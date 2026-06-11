@@ -1,6 +1,6 @@
 #ifndef CNN_DETECT_H
 #define CNN_DETECT_H
-#define CNN_OUT_DIM 5u
+#define CNN_OUT_DIM 7u
 #ifdef __cplusplus
 extern "C" {
 #endif

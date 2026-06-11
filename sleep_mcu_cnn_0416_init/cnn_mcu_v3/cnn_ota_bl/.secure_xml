@@ -68,8 +68,8 @@
     <pincfg active="true" name="" symbol="">
       <configSetting altId="debug0.swclk.p300" configurationId="debug0.swclk" isUsedByDriver="true" peripheral="DEBUG0"/>
       <configSetting altId="debug0.swdio.p108" configurationId="debug0.swdio" isUsedByDriver="true" peripheral="DEBUG0"/>
-      <configSetting altId="p004.input" configurationId="p004"/>
-      <configSetting altId="p005.input" configurationId="p005"/>
+      <configSetting altId="p004.output.high" configurationId="p004"/>
+      <configSetting altId="p005.output.high" configurationId="p005"/>
       <configSetting altId="p006.output.low" configurationId="p006"/>
       <configSetting altId="p007.output.low" configurationId="p007"/>
       <configSetting altId="p008.output.low" configurationId="p008"/>

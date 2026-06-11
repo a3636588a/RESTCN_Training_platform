@@ -13,10 +13,13 @@ INCLUDE memory_regions.ld
 /*FLASH_START = 0x00000000;*/
 
 /* 🟢 編譯為 Slot 1 (APP1) 運行（預設起點：32KB BL + 256B Header 偏移 = 0x8100） */
-FLASH_START = 0x00008100; 
+/*FLASH_START = 0x00008100; */
 
 /* 🔵 編譯為 Slot 2 (APP2) 運行（起點：544KB Slot 2 + 256B Header 偏移 = 0x00088100）
    (如果要特定編譯給 Slot 2 運行，請「取消」下方這行的註解，並將上方的 Slot 1 「加上」註解) */
 /*FLASH_START = 0x00088100;*/
+
+
+FLASH_START = 0x00008100;
 
 INCLUDE fsp_gen.ld

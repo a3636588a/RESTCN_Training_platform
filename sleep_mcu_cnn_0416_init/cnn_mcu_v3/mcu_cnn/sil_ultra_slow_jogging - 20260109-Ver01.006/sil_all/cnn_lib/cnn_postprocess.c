@@ -16,7 +16,7 @@ void cnn_post_reset_buffer(cnn_post_ctx_t *ctx) {
 }
 
 static bool is_priority(int id) {
-    return (id == 0 || id == 1 || id == 2 || id == 3 || id == 4);
+    return (id == 0 || id == 1 || id == 2 || id == 3 || id == 4 || id == 5 || id == 6);
 }
 
 static bool is_restricted(int id) {

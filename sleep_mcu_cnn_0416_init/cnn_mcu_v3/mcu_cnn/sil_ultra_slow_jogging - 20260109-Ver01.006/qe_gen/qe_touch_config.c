@@ -28,7 +28,7 @@
 ***********************************************************************************************************************/
 /***********************************************************************************************************************
 * Touch I/F Configuration File  : l_ultra_slow_jogging.tifcfg
-* Tuning Log File               : l_ultra_slow_jogging_log_tuning20260526172643.log
+* Tuning Log File               : l_ultra_slow_jogging_log_tuning20260611133942.log
 ***********************************************************************************************************************/
 
 #include "qe_touch_config.h"
@@ -59,12 +59,12 @@ CTSU Related Information for [CONFIG01] configuration.
 
 const ctsu_element_cfg_t g_qe_ctsu_element_cfg_config01[] =
 {
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x072, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x0DF, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x0FB, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x0F2, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x16D, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0800, .so = 0x0E5, .snum = 0x01, .sdpa = 0x0C },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x08F, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x098, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x099, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x090, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x090, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_2000, .so = 0x04C, .snum = 0x07, .sdpa = 0x03 },
 };
 
 const ctsu_cfg_t g_qe_ctsu_cfg_config01 =
@@ -80,8 +80,8 @@ const ctsu_cfg_t g_qe_ctsu_cfg_config01 =
 
 
 
-    .ctsuchac0  = 0x34, /* ch0-ch7 enable mask */
-    .ctsuchac1  = 0x13, /* ch8-ch15 enable mask */
+    .ctsuchac0  = 0x14, /* ch0-ch7 enable mask */
+    .ctsuchac1  = 0x17, /* ch8-ch15 enable mask */
     .ctsuchac2  = 0x00, /* ch16-ch23 enable mask */
     .ctsuchac3  = 0x00, /* ch24-ch31 enable mask */
     .ctsuchac4  = 0x00, /* ch32-ch39 enable mask */
@@ -143,37 +143,37 @@ const touch_button_cfg_t g_qe_touch_button_cfg_config01[] =
     /* button00 */
     {
         .elem_index = 0,
-        .threshold  = 15,
-        .hysteresis = 0,
+        .threshold  = 1351,
+        .hysteresis = 67,
     },
     /* button01 */
     {
         .elem_index = 1,
-        .threshold  = 4759,
-        .hysteresis = 237,
+        .threshold  = 940,
+        .hysteresis = 47,
     },
     /* button02 */
     {
         .elem_index = 2,
-        .threshold  = 2610,
-        .hysteresis = 130,
+        .threshold  = 687,
+        .hysteresis = 34,
     },
     /* button03 */
     {
         .elem_index = 3,
-        .threshold  = 2233,
-        .hysteresis = 111,
+        .threshold  = 1194,
+        .hysteresis = 59,
     },
     /* button04 */
     {
         .elem_index = 4,
-        .threshold  = 2710,
-        .hysteresis = 135,
+        .threshold  = 1140,
+        .hysteresis = 57,
     },
     /* button05 */
     {
         .elem_index = 5,
-        .threshold  = 32,
+        .threshold  = 31,
         .hysteresis = 1,
     },
 };
