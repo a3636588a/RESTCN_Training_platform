@@ -108,6 +108,33 @@ typedef enum SIL_ATCMDS_CMDS_OUT_E {
   "$SILRTCI,%d,%02d,%02d,%02d,%02d,%02d,%02d,%02d*%02X\r\n"
 #define SILCNTS_ATCMDS_SILRTCI "$SILRTCI,"
 
+// TinyOL queries
+#define SILCNTS_ATCMDS_SILOLINFO_IN_VER_1 20240130
+#define SILCNTS_ATCMDS_SILOLINFO_IN_VER SILCNTS_ATCMDS_SILOLINFO_IN_VER_1
+#define SILCNTS_ATCMDS_SILOLINFO_IN "$SILOLINFO,%d*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLINFO "$SILOLINFO,"
+
+#define SILCNTS_ATCMDS_SILOLLABELS_IN_VER_1 20240130
+#define SILCNTS_ATCMDS_SILOLLABELS_IN_VER SILCNTS_ATCMDS_SILOLLABELS_IN_VER_1
+#define SILCNTS_ATCMDS_SILOLLABELS_IN "$SILOLLABELS,%d*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLLABELS "$SILOLLABELS,"
+
+#define SILCNTS_ATCMDS_SILOLHEAD_IN_VER_1 20240130
+#define SILCNTS_ATCMDS_SILOLHEAD_IN_VER SILCNTS_ATCMDS_SILOLHEAD_IN_VER_1
+#define SILCNTS_ATCMDS_SILOLHEAD_IN "$SILOLHEAD,%d*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLHEAD "$SILOLHEAD,"
+
+#define SILCNTS_ATCMDS_SILOLCAL_IN_VER_1 20240130
+#define SILCNTS_ATCMDS_SILOLCAL_IN_VER SILCNTS_ATCMDS_SILOLCAL_IN_VER_1
+#define SILCNTS_ATCMDS_SILOLCAL_IN "$SILOLCAL,%d,%s*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLCAL "$SILOLCAL,"
+
+#define SILCNTS_ATCMDS_SILOLCFG_IN "$SILOLCFG,%d,%d,%d,%d,%d,%d,%.6f,%d,%d,%d*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLCFG "$SILOLCFG,"
+
+#define SILCNTS_ATCMDS_SILOLREC_IN "$SILOLREC,%s*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLREC "$SILOLREC,"
+
 // 		SILAPP, application type
 #define SILCNTS_ATCMDS_SILAPP_IN_VER_1 20240130
 #define SILCNTS_ATCMDS_SILAPP_IN_VER SILCNTS_ATCMDS_SILAPP_IN_VER_1
@@ -120,6 +147,12 @@ typedef enum SIL_ATCMDS_CMDS_IN_E {
   ATCMDS_CMDS_IN_SILSFI_E,
   ATCMDS_CMDS_IN_SILSWRB_E,
   ATCMDS_CMDS_IN_SILRTCI_E,
+  ATCMDS_CMDS_IN_SILOLINFO_E,
+  ATCMDS_CMDS_IN_SILOLLABELS_E,
+  ATCMDS_CMDS_IN_SILOLHEAD_E,
+  ATCMDS_CMDS_IN_SILOLCAL_E,
+  ATCMDS_CMDS_IN_SILOLCFG_E,
+  ATCMDS_CMDS_IN_SILOLREC_E,
 
   ATCMDS_CMDS_IN_SILAPP_E,
 
@@ -147,6 +180,11 @@ void SIL_ATCMDS_SendSilMovBase(sil_atcmds_io_e io, uint32_t cnt, uint16_t *base,
 void SIL_ATCMDS_SendSilGesture(sil_atcmds_io_e io, const char *name);
 void SIL_ATCMDS_SendSilDynamicGesture(sil_atcmds_io_e io, const char *name);
 void SIL_ATCMDS_SendSilNotify(sil_atcmds_io_e io, const char *msg);
+void SIL_ATCMDS_SendSilTinyolLabelTable(sil_atcmds_io_e io,
+                                        const char *const *names,
+                                        uint16_t count);
+void SIL_ATCMDS_SendSilTinyolInfo(sil_atcmds_io_e io);
+void SIL_ATCMDS_SendSilTinyolHeadInfo(sil_atcmds_io_e io);
 
 char *SIL_ATCMDS_CutCommand(char *in, uint32_t *offset);
 sil_atcmds_cmds_in_e SIL_ATCMDS_ProcessAtcmds(char *d, char **nD);

@@ -12,6 +12,7 @@
 #include "../uart_dtc/sil_uart_dtc_toble.h"
 #include "../protocol_atcmds/sil_atcmds.h"
 #include "../app/sil_app_ultra_slow_jogging.h"
+#include "../app/sil_app_tinyol.h"
 #include "../timer_reset/sil_dtc_reset.h"
 #include "../flash/sil_flash_data.h"
 #include "../app/sil_app_rtc.h"
@@ -60,8 +61,12 @@ void g_timer1_cb(timer_callback_args_t *p_args) {
 	        SIL_APP_USJ_OutputSteps();
 	    }
 	}
-	if ((cnt % 2) == 0) {	// 10 ms
-	    SIL_APP_TOUCH_RawDataToOutside();
+    if ((cnt % 2) == 0) {	// 10 ms
+	    if (gsil_globals_current_app != SIL_APP_TINYOL_E ||
+            SIL_APP_TINYOL_IsCalibrationActive() ||
+            SIL_APP_TINYOL_IsRecordingActive()) {
+	        SIL_APP_TOUCH_RawDataToOutside();
+	    }
 	    if (gsil_globals_current_app == SIL_APP_USJ_E || gsil_globals_current_app == SIL_APP_JRC_E) {
 	        SIL_APP_USJ_CountSteps();
 	    }

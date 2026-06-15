@@ -19,6 +19,42 @@
 
 ![ota工作區範例](photo/ota工作區範例.png)
 
+## MCU v3 re-gen 後修正工具
+- `fix_tinyol_flashmap_gui.py`
+  - 用來在 FSP `re-gen` 後，自動修正兩個 `bsp_linker_info.h`
+  - 會強制把：
+    - `RM_MCUBOOT_LARGEST_SECTOR -> 0x00070000`
+    - `FLASH_AREA_0S.fa_size -> header + slot2 payload`
+  - 避免 `FLASH_CPU0_C` 被 generator 重新併進 `secondary slot`
+
+### GUI 用法
+```powershell
+& C:\Users\USE\miniconda3\python.exe C:\Users\USE\Desktop\SEAN_CODE\RESTCN\fix_tinyol_flashmap_gui.py
+```
+
+### GUI + 預設路徑
+```powershell
+& C:\Users\USE\miniconda3\python.exe C:\Users\USE\Desktop\SEAN_CODE\RESTCN\fix_tinyol_flashmap_gui.py --root C:\Users\USE\Desktop\SEAN_CODE\RESTCN
+```
+
+### CLI 用法（自己指定兩個檔案）
+```powershell
+& C:\Users\USE\miniconda3\python.exe C:\Users\USE\Desktop\SEAN_CODE\RESTCN\fix_tinyol_flashmap_gui.py --no-gui `
+  --file "C:\Users\USE\Desktop\SEAN_CODE\RESTCN\sleep_mcu_cnn_0416_init\cnn_mcu_v3\cnn_ota_bl\Debug\bsp_linker_info.h" `
+  --file "C:\Users\USE\Desktop\SEAN_CODE\RESTCN\sleep_mcu_cnn_0416_init\cnn_mcu_v3\mcu_cnn\sil_ultra_slow_jogging - 20260109-Ver01.006\Debug\bsp_linker_info.h"
+```
+
+## TinyOL MCU 規劃文件
+- `TINYOL_MODE_PLAN.md`
+  - 整理目前 TinyOL mode 的 MCU 導入規劃
+  - 包含：
+    - mode 架構
+    - UART 交握流程
+    - replay policy
+    - active head storage
+    - boot / OTA 邊界
+    - 驗證標準
+
 ## 1. 目前重點功能
 - 訓練支援 `model_backbone` 切換：`cnn` / `ds_tcn`
 - Train 頁面可直接調 `label_smoothing`
@@ -209,6 +245,15 @@ Replay 策略：
 - `CSV / UART` 多給 channel 可以
 - 缺少 `meta.channels` 需要的欄位才會報錯
 
+### TinyOL MCU 進度
+- 已完成 `step1 ~ step5`
+  - `step1`：切入 TinyOL mode
+  - `step2`：讀取 TinyOL info / label table / active head 狀態
+  - `step3`：重新校正 base / hold
+  - `step4`：送出 session config（target label、epochs）
+  - `step5`：錄製 target raw data，單筆 150 samples，最多 3 筆，存於 MCU RAM
+- 後續 `step6 ~ step8` 會接 replay、OL training、apply / rollback / exit
+
 訓練與 terminal 輸出：
 - 可在 UI 設定 `Batch Size`、`Epochs`、`Learning Rate`
 - terminal 會輸出：
@@ -232,6 +277,11 @@ MCU 匯出：
   - `tinyol_cls_<id>_windows`
   - `tinyol_cls_<id>_base`
   - `tinyol_cls_<id>_hold`
+- `Generate All (cnn_lib)` 也會順便輸出 default data：
+  - `tinyol_default_windows.h`
+  - `tinyol_default_windows.c`
+  - `tinyol_default_manifest.json`
+  - 格式同樣是每個 class 各自獨立，供板端預燒 default data 使用
 
 ## 7. 已知結論（本輪驗證）
 - `ds_tcn` 在目前資料上可正常收斂，val_acc 約 0.992~0.993。
