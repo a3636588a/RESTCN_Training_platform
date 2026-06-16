@@ -9,7 +9,7 @@ fsp_err_t SIL_APP_TOUCH_StartScan() {
 }
 
 fsp_err_t SIL_APP_TOUCH_GetChannelsDataPeriod() {
-	if (gsil_globals_current_app == SIL_APP_GLOVE_ML_E || gsil_globals_current_app == SIL_APP_DS_E) {
+	if (gsil_globals_current_app == SIL_APP_GLOVE_ML_E || gsil_globals_current_app == SIL_APP_DS_E || gsil_globals_current_app == SIL_APP_TINYOL_E) {
 		return SIL_TOUCH_GetChannelsDataGlove(&gsil_app_touch.sensor);
 	} else {
 		return SIL_TOUCH_GetChannelsData(&gsil_app_touch.sensor);
@@ -42,7 +42,7 @@ void SIL_APP_TOUCH_RawDataToOutside() {
 	
 	gsil_app_touch.sensor.count ++;
 	
-	if (gsil_globals_current_app == SIL_APP_GLOVE_ML_E || gsil_globals_current_app == SIL_APP_DS_E) {
+	if (gsil_globals_current_app == SIL_APP_GLOVE_ML_E || gsil_globals_current_app == SIL_APP_DS_E || gsil_globals_current_app == SIL_APP_TINYOL_E) {
 		// Glove/DS Mode: 6 channels Raw
 		SIL_ATCMDS_SendSilinoGlove(ATCMDS_IO_TOPC, gsil_app_touch.sensor.count, gsil_app_touch.sensor.a_data_ch, SILCNTS_GLOVE_CHS_TOTAL);
 	} else {

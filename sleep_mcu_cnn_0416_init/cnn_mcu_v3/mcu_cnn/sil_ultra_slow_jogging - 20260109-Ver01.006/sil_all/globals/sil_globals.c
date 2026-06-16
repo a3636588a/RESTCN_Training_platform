@@ -12,6 +12,7 @@
 #include "..\app\sil_app_ticks.h"
 #include "..\app\sil_app_glove_ml.h" // [Sean] Glove ML App
 #include "..\app\sil_app_ds.h"       // [Sean] Direct Sensor HID Control App
+#include "..\app\sil_app_tinyol.h"   // [Sean] TinyOL App
 #include "..\usb_pcdc\sil_usb_pcdc.h"
 
 //* Global mapping for Glove ML: Logic UART Pos X -> Raw Pin Index Y */
@@ -53,6 +54,8 @@ fsp_err_t SIL_GLOBALS_Exit(void) {
 		// Glove ML exit if any
 	} else if (gsil_globals_current_app == SIL_APP_DS_E) {
 		SIL_APP_DS_Exit();
+	} else if (gsil_globals_current_app == SIL_APP_TINYOL_E) {
+		SIL_APP_TINYOL_Exit();
 	}
 
 	return err;
@@ -143,6 +146,8 @@ fsp_err_t SIL_GLOBALS_Enter1(void) {
 		SIL_APP_GLOVE_ML_Enter1();
 	} else if (gsil_globals_current_app == SIL_APP_DS_E) {
 		SIL_APP_DS_Enter1();
+	} else if (gsil_globals_current_app == SIL_APP_TINYOL_E) {
+		SIL_APP_TINYOL_Enter1();
 	}
 
 	SIL_GLOBALS_SetStatus(GLOBALS_STS_ENTER2);
@@ -195,6 +200,8 @@ fsp_err_t SIL_GLOBALS_Enter2(void) {
 		SIL_APP_GLOVE_ML_Enter2();
 	} else if (gsil_globals_current_app == SIL_APP_DS_E) {
 		SIL_APP_DS_Enter2();
+	} else if (gsil_globals_current_app == SIL_APP_TINYOL_E) {
+		SIL_APP_TINYOL_Enter2();
 	}
 
 	SIL_GLOBALS_SetStatus(GLOBALS_STS_MAINLOOP1);
@@ -248,6 +255,8 @@ fsp_err_t SIL_GLOBALS_MainLoop1(void) {
 		SIL_APP_GLOVE_ML_MainLoop1();
 	} else if (gsil_globals_current_app == SIL_APP_DS_E) {
 		SIL_APP_DS_MainLoop1();
+	} else if (gsil_globals_current_app == SIL_APP_TINYOL_E) {
+		SIL_APP_TINYOL_MainLoop1();
 	}
 
 		
@@ -318,6 +327,8 @@ fsp_err_t SIL_GLOBALS_MainLoop2(void) {
 		SIL_APP_GLOVE_ML_MainLoop2();
 	} else if (gsil_globals_current_app == SIL_APP_DS_E) {
 		SIL_APP_DS_MainLoop2();
+	} else if (gsil_globals_current_app == SIL_APP_TINYOL_E) {
+		SIL_APP_TINYOL_MainLoop2();
 	}
 	
 	

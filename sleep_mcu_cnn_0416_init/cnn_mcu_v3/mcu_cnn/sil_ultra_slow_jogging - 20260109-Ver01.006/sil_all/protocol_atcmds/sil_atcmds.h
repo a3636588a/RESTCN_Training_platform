@@ -135,6 +135,36 @@ typedef enum SIL_ATCMDS_CMDS_OUT_E {
 #define SILCNTS_ATCMDS_SILOLREC_IN "$SILOLREC,%s*%02X\r\n"
 #define SILCNTS_ATCMDS_SILOLREC "$SILOLREC,"
 
+#define SILCNTS_ATCMDS_SILOLREPLAY_IN "$SILOLREPLAY,%s*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLREPLAY "$SILOLREPLAY,"
+
+#define SILCNTS_ATCMDS_SILOLRUN_IN "$SILOLRUN,%s*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLRUN "$SILOLRUN,"
+
+#define SILCNTS_ATCMDS_SILOLVAL_IN "$SILOLVAL,%s*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLVAL "$SILOLVAL,"
+
+#define SILCNTS_ATCMDS_SILOLRESULT_IN "$SILOLRESULT*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLRESULT "$SILOLRESULT"
+
+#define SILCNTS_ATCMDS_SILOLAPPLY_IN "$SILOLAPPLY*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLAPPLY "$SILOLAPPLY"
+
+#define SILCNTS_ATCMDS_SILOLERASE_IN "$SILOLERASE*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLERASE "$SILOLERASE"
+
+#define SILCNTS_ATCMDS_SILOLROLLBACK_IN "$SILOLROLLBACK*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLROLLBACK "$SILOLROLLBACK"
+
+#define SILCNTS_ATCMDS_SILOLFLASHTEST_IN "$SILOLFLASHTEST*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLFLASHTEST "$SILOLFLASHTEST"
+
+#define SILCNTS_ATCMDS_SILOLHEADDUMP_IN "$SILOLHEADDUMP*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLHEADDUMP "$SILOLHEADDUMP"
+
+#define SILCNTS_ATCMDS_SILOLHEADMODE_IN "$SILOLHEADMODE,%s*%02X\r\n"
+#define SILCNTS_ATCMDS_SILOLHEADMODE "$SILOLHEADMODE,"
+
 // 		SILAPP, application type
 #define SILCNTS_ATCMDS_SILAPP_IN_VER_1 20240130
 #define SILCNTS_ATCMDS_SILAPP_IN_VER SILCNTS_ATCMDS_SILAPP_IN_VER_1
@@ -153,6 +183,16 @@ typedef enum SIL_ATCMDS_CMDS_IN_E {
   ATCMDS_CMDS_IN_SILOLCAL_E,
   ATCMDS_CMDS_IN_SILOLCFG_E,
   ATCMDS_CMDS_IN_SILOLREC_E,
+  ATCMDS_CMDS_IN_SILOLREPLAY_E,
+  ATCMDS_CMDS_IN_SILOLRUN_E,
+  ATCMDS_CMDS_IN_SILOLVAL_E,
+  ATCMDS_CMDS_IN_SILOLRESULT_E,
+  ATCMDS_CMDS_IN_SILOLAPPLY_E,
+  ATCMDS_CMDS_IN_SILOLERASE_E,
+  ATCMDS_CMDS_IN_SILOLROLLBACK_E,
+  ATCMDS_CMDS_IN_SILOLFLASHTEST_E,
+  ATCMDS_CMDS_IN_SILOLHEADDUMP_E,
+  ATCMDS_CMDS_IN_SILOLHEADMODE_E,
 
   ATCMDS_CMDS_IN_SILAPP_E,
 
@@ -185,6 +225,16 @@ void SIL_ATCMDS_SendSilTinyolLabelTable(sil_atcmds_io_e io,
                                         uint16_t count);
 void SIL_ATCMDS_SendSilTinyolInfo(sil_atcmds_io_e io);
 void SIL_ATCMDS_SendSilTinyolHeadInfo(sil_atcmds_io_e io);
+void SIL_ATCMDS_SendSilTinyolRunResult(sil_atcmds_io_e io, const char *topic,
+                                       uint32_t seq, uint16_t target_label,
+                                       uint8_t replay_ready,
+                                       uint8_t run_in_progress,
+                                       uint8_t validation_in_progress,
+                                       uint8_t result_ready,
+                                       uint8_t head_exists,
+                                       uint8_t head_enabled,
+                                       uint32_t head_bytes,
+                                       uint32_t head_checksum);
 
 char *SIL_ATCMDS_CutCommand(char *in, uint32_t *offset);
 sil_atcmds_cmds_in_e SIL_ATCMDS_ProcessAtcmds(char *d, char **nD);

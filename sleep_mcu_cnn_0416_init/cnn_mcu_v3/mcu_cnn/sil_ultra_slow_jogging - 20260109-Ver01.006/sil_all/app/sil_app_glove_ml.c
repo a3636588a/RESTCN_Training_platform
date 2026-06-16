@@ -7,6 +7,7 @@
 #include "..\mlp_lib\dynamic_feature.h"
 #include "..\mlp_lib\gain_map_lib.h"
 #include "..\mlp_lib\majority_chain.h"
+#include "..\app\sil_app_tinyol.h"
 #include "..\protocol_atcmds\sil_atcmds.h"
 #include <math.h>
 #include <stdbool.h>
@@ -36,10 +37,17 @@ static float s_mean[CNN_CH_USED];
 static float s_proba[CNN_OUT_DIM];
 
 fsp_err_t SIL_APP_GLOVE_ML_Enter1() {
+  fsp_err_t head_err;
   memset(&gsil_app_glove_ml, 0, sizeof(gsil_app_glove_ml));
   gsil_app_glove_ml.state = SIL_APP_GLOVE_ML_STS_WARMUP;
   gsil_app_glove_ml.timer_cnt = 0;
 
+  head_err = SIL_APP_TINYOL_LoadActiveHead();
+  if (head_err == FSP_SUCCESS) {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,ACTIVE_HEAD_LOADED");
+  } else {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,ACTIVE_HEAD_FALLBACK_DEFAULT");
+  }
   s_algo_inited = false;
   return FSP_SUCCESS;
 }
@@ -112,9 +120,9 @@ void SIL_APP_GLOVE_ML_MainLoop1() {
                          gsil_app_glove_ml.sample_cnt);
 
           /* Use base + 20000 to replace manual calibration */
-          gsil_app_glove_ml.hold_avg[i] = (uint16_t)(gsil_app_glove_ml.base_avg[i] + 20000);
-          gsil_app_glove_ml.hold_min[i] = gsil_app_glove_ml.hold_avg[i];
-          gsil_app_glove_ml.hold_max[i] = gsil_app_glove_ml.hold_avg[i];
+//          gsil_app_glove_ml.hold_avg[i] = (uint16_t)(gsil_app_glove_ml.base_avg[i] + 20000);
+//          gsil_app_glove_ml.hold_min[i] = gsil_app_glove_ml.hold_avg[i];
+//          gsil_app_glove_ml.hold_max[i] = gsil_app_glove_ml.hold_avg[i];
         }
         SIL_ATCMDS_SendSilBaseExt(ATCMDS_IO_TOPC, gsil_app_glove_ml.sample_cnt,
                                   gsil_app_glove_ml.base_avg,
@@ -122,18 +130,18 @@ void SIL_APP_GLOVE_ML_MainLoop1() {
                                   gsil_app_glove_ml.base_max, 6);
 
         /* Send simulated Hold data to host to maintain protocol flow */
-        SIL_ATCMDS_SendSilHoldExt(ATCMDS_IO_TOPC, 1,
-                                  gsil_app_glove_ml.hold_avg,
-                                  gsil_app_glove_ml.hold_min,
-                                  gsil_app_glove_ml.hold_max, 6);
+//        SIL_ATCMDS_SendSilHoldExt(ATCMDS_IO_TOPC, 1,
+//                                  gsil_app_glove_ml.hold_avg,
+//                                  gsil_app_glove_ml.hold_min,
+//                                  gsil_app_glove_ml.hold_max, 6);
 
         /* Skip HOLD calibration states and go to detection directly */
-        gsil_app_glove_ml.state = SIL_APP_GLOVE_ML_STS_NOTIFY_DETECT;
+        gsil_app_glove_ml.state = SIL_APP_GLOVE_ML_STS_NOTIFY_HOLD;
         gsil_app_glove_ml.timer_cnt = 0;
       }
     } break;
 
-    /*
+
     case SIL_APP_GLOVE_ML_STS_NOTIFY_HOLD:
       SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "INITHOLD");
       if (gsil_app_glove_ml.timer_cnt++ >= 500) {
@@ -180,7 +188,7 @@ void SIL_APP_GLOVE_ML_MainLoop1() {
         gsil_app_glove_ml.timer_cnt = 0;
       }
     } break;
-    */
+
 
     case SIL_APP_GLOVE_ML_STS_NOTIFY_DETECT:
       SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "DETECT START");

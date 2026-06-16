@@ -10,46 +10,16 @@
 #include "..\cnn_lib\cnn_model_data.h"
 #include <stdlib.h>
 
-extern const float DENSE_F2_W[];
-extern const float DENSE_F2_B[];
-extern const float DENSE_OUT_W[];
-extern const float DENSE_OUT_B[];
-
-#define SIL_TINYOL_ACTIVE_HEAD_EXISTS 1u
-#define SIL_TINYOL_ACTIVE_WEIGHT_SLOT 0u
-#define SIL_TINYOL_HEAD_VERSION SILCNTS_ATCMDS_SILOLHEAD_IN_VER
-#define SIL_TINYOL_F2_W_COUNT (128u * 64u)
-#define SIL_TINYOL_F2_B_COUNT 64u
-#define SIL_TINYOL_OUT_W_COUNT (64u * (uint32_t)CNN_OUT_DIM)
-#define SIL_TINYOL_OUT_B_COUNT ((uint32_t)CNN_OUT_DIM)
+static uint32_t g_tinyol_run_seq = 0;
+static uint32_t g_tinyol_validation_seq = 0;
+static uint32_t g_tinyol_result_seq = 0;
 
 static uint32_t SIL_ATCMDS_TinyolHeadWeightBytes(void) {
-  return (uint32_t)((SIL_TINYOL_F2_W_COUNT + SIL_TINYOL_F2_B_COUNT +
-                     SIL_TINYOL_OUT_W_COUNT + SIL_TINYOL_OUT_B_COUNT) *
-                    sizeof(float));
+  return SIL_APP_TINYOL_GetActiveHeadBytes();
 }
 
 static uint32_t SIL_ATCMDS_TinyolHeadWeightChecksum(void) {
-  const uint8_t *blocks[] = {
-      (const uint8_t *)DENSE_F2_W,
-      (const uint8_t *)DENSE_F2_B,
-      (const uint8_t *)DENSE_OUT_W,
-      (const uint8_t *)DENSE_OUT_B,
-  };
-  const uint32_t lengths[] = {
-      (uint32_t)(SIL_TINYOL_F2_W_COUNT * sizeof(float)),
-      (uint32_t)(SIL_TINYOL_F2_B_COUNT * sizeof(float)),
-      (uint32_t)(SIL_TINYOL_OUT_W_COUNT * sizeof(float)),
-      (uint32_t)(SIL_TINYOL_OUT_B_COUNT * sizeof(float)),
-  };
-  uint32_t checksum = 0;
-  for (uint32_t b = 0; b < (uint32_t)(sizeof(blocks) / sizeof(blocks[0])); b++) {
-    for (uint32_t i = 0; i < lengths[b]; i++) {
-      checksum ^= blocks[b][i];
-      checksum = (checksum << 1) | (checksum >> 31);
-    }
-  }
-  return checksum;
+  return SIL_APP_TINYOL_GetActiveHeadChecksum();
 }
 
 // msg: $GPVTG,,T,,M,0.00,N,0.0,K,A*13\n
@@ -251,12 +221,12 @@ void SIL_ATCMDS_SendSilinoGlove(sil_atcmds_io_e io, uint32_t cnt, uint16_t *ch,
 
 void SIL_ATCMDS_SendSilNotify(sil_atcmds_io_e io, const char *msg) {
   uint16_t cs;
-  static uint8_t buf[128];
+  static uint8_t buf[256];
   uint8_t tmp[16] = {0};
   uint16_t index = 0;
 
   memset(buf, 0, sizeof(buf));
-  snprintf((char *)buf, 128, "$SILNOTIFY,%s*", msg);
+  snprintf((char *)buf, sizeof(buf), "$SILNOTIFY,%s*", msg);
 
   cs = SIL_ATCMDS_Checksum(buf);
   SIL_ATCMDS_ChecksumToHex(cs, tmp, 4);
@@ -328,14 +298,102 @@ void SIL_ATCMDS_SendSilTinyolHeadInfo(sil_atcmds_io_e io) {
 
   memset(buf, 0, sizeof(buf));
   snprintf((char *)buf, sizeof(buf),
-           "$SILOLHEAD,%u,%u,%u,%u,%u,%u,%u*",
-           (unsigned int)SIL_TINYOL_HEAD_VERSION,
-           (unsigned int)SIL_TINYOL_ACTIVE_HEAD_EXISTS,
-           (unsigned int)SIL_TINYOL_ACTIVE_WEIGHT_SLOT,
-           (unsigned int)SIL_TINYOL_HEAD_VERSION,
+           "$SILOLHEAD,%u,%u,%u,%u,%u,%u*",
+           (unsigned int)SIL_APP_TINYOL_HasActiveHead(),
+           (unsigned int)SIL_APP_TINYOL_GetActiveWeightSlot(),
+           (unsigned int)SIL_APP_TINYOL_GetActiveHeadVersion(),
            (unsigned int)active_weight_size,
            (unsigned int)active_weight_checksum,
-           (unsigned int)(active_weight_size > 0 ? 1u : 0u));
+           (unsigned int)SIL_APP_TINYOL_IsActiveHeadEnabled());
+  cs = SIL_ATCMDS_Checksum(buf);
+  SIL_ATCMDS_ChecksumToHex(cs, tmp, sizeof(tmp));
+  strncat((char *)buf, (char *)tmp, sizeof(buf) - strlen((char *)buf) - 1);
+  strncat((char *)buf, "\r\n", sizeof(buf) - strlen((char *)buf) - 1);
+  if (io == ATCMDS_IO_TOPC) {
+    SIL_UART_DTC_TOPC_WriteToTxBuffer(buf, (uint16_t)strlen((char *)buf));
+  }
+}
+
+static void SIL_ATCMDS_SendSilTinyolHeadDump(sil_atcmds_io_e io) {
+  uint8_t dump_buf[64];
+  uint8_t line[192];
+  uint16_t cs;
+  uint8_t tmp[8] = {0};
+  uint32_t i;
+
+  memset(dump_buf, 0, sizeof(dump_buf));
+  SIL_APP_TINYOL_CopyActiveHeadDump(dump_buf, sizeof(dump_buf));
+
+  memset(line, 0, sizeof(line));
+  snprintf((char *)line, sizeof(line),
+           "TINYOL,HEAD_DUMP,magic=0x%08lX,exists=%u,enabled=%u,slot=%u,ver=%u,bytes=%u,checksum=%lu*",
+           (unsigned long)SIL_APP_TINYOL_GetActiveHeadMagic(),
+           (unsigned int)SIL_APP_TINYOL_HasActiveHead(),
+           (unsigned int)SIL_APP_TINYOL_IsActiveHeadEnabled(),
+           (unsigned int)SIL_APP_TINYOL_GetActiveWeightSlot(),
+           (unsigned int)SIL_APP_TINYOL_GetActiveHeadVersion(),
+           (unsigned int)SIL_APP_TINYOL_GetActiveHeadBytes(),
+           (unsigned long)SIL_APP_TINYOL_GetActiveHeadChecksum());
+  cs = SIL_ATCMDS_Checksum(line);
+  SIL_ATCMDS_ChecksumToHex(cs, tmp, sizeof(tmp));
+  strncat((char *)line, (char *)tmp, sizeof(line) - strlen((char *)line) - 1);
+  strncat((char *)line, "\r\n", sizeof(line) - strlen((char *)line) - 1);
+  if (io == ATCMDS_IO_TOPC) {
+    SIL_UART_DTC_TOPC_WriteToTxBuffer(line, (uint16_t)strlen((char *)line));
+  } else {
+    SIL_UART_DTC_TOBLE_WriteToTxBuffer(line, (uint16_t)strlen((char *)line));
+  }
+
+  for (i = 0; i < sizeof(dump_buf); i += 16U) {
+    uint32_t j;
+
+    memset(line, 0, sizeof(line));
+    snprintf((char *)line, sizeof(line), "TINYOL,HEAD_DUMP,%02lu,", (unsigned long)i);
+    for (j = 0; (j < 16U) && ((i + j) < sizeof(dump_buf)); j++) {
+      char hex[4];
+      snprintf(hex, sizeof(hex), "%02X", dump_buf[i + j]);
+      strncat((char *)line, hex, sizeof(line) - strlen((char *)line) - 1);
+      if ((j + 1U) < 16U) {
+        strncat((char *)line, " ", sizeof(line) - strlen((char *)line) - 1);
+      }
+    }
+    strncat((char *)line, "\r\n", sizeof(line) - strlen((char *)line) - 1);
+    if (io == ATCMDS_IO_TOPC) {
+      SIL_UART_DTC_TOPC_WriteToTxBuffer(line, (uint16_t)strlen((char *)line));
+    } else {
+      SIL_UART_DTC_TOBLE_WriteToTxBuffer(line, (uint16_t)strlen((char *)line));
+    }
+  }
+}
+
+void SIL_ATCMDS_SendSilTinyolRunResult(sil_atcmds_io_e io, const char *topic,
+                                       uint32_t seq, uint16_t target_label,
+                                       uint8_t replay_ready,
+                                       uint8_t run_in_progress,
+                                       uint8_t validation_in_progress,
+                                       uint8_t result_ready,
+                                       uint8_t head_exists,
+                                       uint8_t head_enabled,
+                                       uint32_t head_bytes,
+                                       uint32_t head_checksum) {
+  uint16_t cs;
+  uint8_t buf[192];
+  uint8_t tmp[8] = {0};
+
+  memset(buf, 0, sizeof(buf));
+  snprintf((char *)buf, sizeof(buf),
+           "$SILNOTIFY,TINYOL,%s,%lu,%u,%u,%u,%u,%u,%u,%u,%lu,%lu*",
+           topic,
+           (unsigned long)seq,
+           (unsigned int)target_label,
+           (unsigned int)replay_ready,
+           (unsigned int)run_in_progress,
+           (unsigned int)validation_in_progress,
+           (unsigned int)result_ready,
+           (unsigned int)head_exists,
+           (unsigned int)head_enabled,
+           (unsigned long)head_bytes,
+           (unsigned long)head_checksum);
   cs = SIL_ATCMDS_Checksum(buf);
   SIL_ATCMDS_ChecksumToHex(cs, tmp, sizeof(tmp));
   strncat((char *)buf, (char *)tmp, sizeof(buf) - strlen((char *)buf) - 1);
@@ -624,6 +682,105 @@ sil_atcmds_cmds_in_e SIL_ATCMDS_ProcessAtcmds(char *d, char **nD) {
     goto EXIT;
   }
 
+  // SILOLREPLAY
+  ll = strlen(SILCNTS_ATCMDS_SILOLREPLAY);
+  result = strncmp(SILCNTS_ATCMDS_SILOLREPLAY, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLREPLAY_E;
+    goto EXIT;
+  }
+
+  // SILOLRUN
+  ll = strlen(SILCNTS_ATCMDS_SILOLRUN);
+  result = strncmp(SILCNTS_ATCMDS_SILOLRUN, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLRUN_E;
+    goto EXIT;
+  }
+
+  // SILOLVAL
+  ll = strlen(SILCNTS_ATCMDS_SILOLVAL);
+  result = strncmp(SILCNTS_ATCMDS_SILOLVAL, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLVAL_E;
+    goto EXIT;
+  }
+
+  // SILOLRESULT
+  ll = strlen(SILCNTS_ATCMDS_SILOLRESULT);
+  result = strncmp(SILCNTS_ATCMDS_SILOLRESULT, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLRESULT_E;
+    goto EXIT;
+  }
+
+  // SILOLAPPLY
+  ll = strlen(SILCNTS_ATCMDS_SILOLAPPLY);
+  result = strncmp(SILCNTS_ATCMDS_SILOLAPPLY, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLAPPLY_E;
+    goto EXIT;
+  }
+
+  // SILOLROLLBACK
+  ll = strlen(SILCNTS_ATCMDS_SILOLROLLBACK);
+  result = strncmp(SILCNTS_ATCMDS_SILOLROLLBACK, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLROLLBACK_E;
+    goto EXIT;
+  }
+
+  // SILOLFLASHTEST
+  ll = strlen(SILCNTS_ATCMDS_SILOLFLASHTEST);
+  result = strncmp(SILCNTS_ATCMDS_SILOLFLASHTEST, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLFLASHTEST_E;
+    goto EXIT;
+  }
+
+  // SILOLHEADDUMP
+  ll = strlen(SILCNTS_ATCMDS_SILOLHEADDUMP);
+  result = strncmp(SILCNTS_ATCMDS_SILOLHEADDUMP, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLHEADDUMP_E;
+    goto EXIT;
+  }
+
+  // SILOLHEADMODE
+  ll = strlen(SILCNTS_ATCMDS_SILOLHEADMODE);
+  result = strncmp(SILCNTS_ATCMDS_SILOLHEADMODE, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLHEADMODE_E;
+    goto EXIT;
+  }
+
   // SILAPP
   ll = strlen(SILCNTS_ATCMDS_SILAPP);
   result = strncmp(SILCNTS_ATCMDS_SILAPP, (const char *)p, (size_t)ll);
@@ -816,6 +973,219 @@ static void SIL_ATCMDS_DispatchSilolRec(uint8_t *buf, uint16_t len) {
   }
 }
 
+static void SIL_ATCMDS_DispatchSilolReplay(uint8_t *buf, uint16_t len) {
+  (void)buf;
+  (void)len;
+  if (SIL_APP_TINYOL_BuildReplay() != FSP_SUCCESS) {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,REPLAY_FAIL");
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolRun(uint8_t *buf, uint16_t len) {
+  uint8_t *d;
+  uint8_t *p = buf;
+  uint32_t offset = 0;
+  (void)len;
+
+  d = (uint8_t *)SIL_ATCMDS_CutCommand((char *)p, &offset);
+  if (strncmp((char *)p, "START", strlen("START")) == 0) {
+    if (!SIL_APP_TINYOL_IsReplayReady()) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,RUN_WAIT_REPLAY");
+      return;
+    }
+    if (SIL_APP_TINYOL_IsRunInProgress()) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,RUN_BUSY");
+      return;
+    }
+    SIL_APP_TINYOL_SetRunReady();
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,RUN_ACCEPT");
+    SIL_ATCMDS_SendSilTinyolRunResult(ATCMDS_IO_TOPC, "RUN_START",
+                                      ++g_tinyol_run_seq,
+                                      SIL_APP_TINYOL_GetTargetLabel(),
+                                      SIL_APP_TINYOL_IsReplayReady(),
+                                      SIL_APP_TINYOL_IsRunInProgress(),
+                                      SIL_APP_TINYOL_IsValidationInProgress(),
+                                      SIL_APP_TINYOL_IsResultReady(),
+                                      SIL_APP_TINYOL_HasActiveHead(),
+                                      SIL_APP_TINYOL_IsActiveHeadEnabled(),
+                                      SIL_APP_TINYOL_GetActiveHeadBytes(),
+                                      SIL_APP_TINYOL_GetActiveHeadChecksum());
+    if (SIL_APP_TINYOL_RunTraining() != FSP_SUCCESS) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,TRAIN_FAIL");
+    }
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolVal(uint8_t *buf, uint16_t len) {
+  uint8_t *d;
+  uint8_t *p = buf;
+  uint32_t offset = 0;
+  (void)len;
+
+  d = (uint8_t *)SIL_ATCMDS_CutCommand((char *)p, &offset);
+  if (strncmp((char *)p, "RUN", strlen("RUN")) == 0) {
+    if (!SIL_APP_TINYOL_IsTrainingDone()) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,VAL_WAIT_RUN");
+      return;
+    }
+    SIL_APP_TINYOL_SetValidationReady();
+    SIL_ATCMDS_SendSilTinyolRunResult(ATCMDS_IO_TOPC, "VAL_START",
+                                      ++g_tinyol_validation_seq,
+                                      SIL_APP_TINYOL_GetTargetLabel(),
+                                      SIL_APP_TINYOL_IsReplayReady(),
+                                      SIL_APP_TINYOL_IsRunInProgress(),
+                                      SIL_APP_TINYOL_IsValidationInProgress(),
+                                      SIL_APP_TINYOL_IsResultReady(),
+                                      SIL_APP_TINYOL_HasActiveHead(),
+                                      SIL_APP_TINYOL_IsActiveHeadEnabled(),
+                                      SIL_APP_TINYOL_GetActiveHeadBytes(),
+                                      SIL_APP_TINYOL_GetActiveHeadChecksum());
+    if (SIL_APP_TINYOL_RunValidation() != FSP_SUCCESS) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,VAL_FAIL");
+    }
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolResult(uint8_t *buf, uint16_t len) {
+  (void)buf;
+  (void)len;
+  {
+    char msg[256];
+    const char *status = SIL_APP_TINYOL_IsValidationPassed() ? "PASS" : "REJECT";
+    snprintf(msg, sizeof(msg),
+             "TINYOL,RESULT,%s,target=%u,train_loss=%.4f,train_acc=%.3f,val_loss=%.4f,val_acc=%.3f,target_recall=%.3f,overall_acc=%.3f,head=%u,enabled=%u,bytes=%lu,checksum=%lu",
+             status,
+             (unsigned int)SIL_APP_TINYOL_GetTargetLabel(),
+             (double)SIL_APP_TINYOL_GetLastTrainLoss(),
+             (double)SIL_APP_TINYOL_GetLastTrainAcc(),
+             (double)SIL_APP_TINYOL_GetLastValLoss(),
+             (double)SIL_APP_TINYOL_GetLastValAcc(),
+             (double)SIL_APP_TINYOL_GetLastTargetRecall(),
+             (double)SIL_APP_TINYOL_GetLastOverallAcc(),
+             (unsigned int)SIL_APP_TINYOL_HasActiveHead(),
+             (unsigned int)SIL_APP_TINYOL_IsActiveHeadEnabled(),
+             (unsigned long)SIL_APP_TINYOL_GetActiveHeadBytes(),
+             (unsigned long)SIL_APP_TINYOL_GetActiveHeadChecksum());
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolApply(uint8_t *buf, uint16_t len) {
+  fsp_err_t err;
+  (void)buf;
+  (void)len;
+
+  err = SIL_APP_TINYOL_SaveActiveHead();
+  if (err == FSP_SUCCESS) {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,APPLY_OK");
+  } else {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "TINYOL,APPLY_FAIL,%u,%d",
+             (unsigned int)SIL_APP_TINYOL_GetLastFlashOpStage(), (int)err);
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolErase(uint8_t *buf, uint16_t len) {
+  fsp_err_t err;
+  (void)buf;
+  (void)len;
+
+  err = SIL_APP_TINYOL_EraseActiveHead();
+  if (err == FSP_SUCCESS) {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,ERASE_OK");
+  } else {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "TINYOL,ERASE_FAIL,%u,%d",
+             (unsigned int)SIL_APP_TINYOL_GetLastFlashOpStage(), (int)err);
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolRollback(uint8_t *buf, uint16_t len) {
+  fsp_err_t err;
+  (void)buf;
+  (void)len;
+
+  err = SIL_APP_TINYOL_RestoreDefaultHead();
+  if (err == FSP_SUCCESS) {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,ROLLBACK_OK");
+  } else {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "TINYOL,ROLLBACK_FAIL,%u,%d",
+             (unsigned int)SIL_APP_TINYOL_GetLastFlashOpStage(), (int)err);
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolFlashTest(uint8_t *buf, uint16_t len) {
+  fsp_err_t err;
+  (void)buf;
+  (void)len;
+
+  err = SIL_APP_TINYOL_RunFlashBlockTest();
+  if (err == FSP_SUCCESS) {
+    char msg[128];
+    snprintf(msg, sizeof(msg), "TINYOL,FLASHTEST_OK,stage=%u,addr=0x%08lX,checksum=%lu",
+             (unsigned int)SIL_APP_TINYOL_GetLastFlashOpStage(),
+             (unsigned long)SIL_APP_TINYOL_GetLastFlashTestAddress(),
+             (unsigned long)SIL_APP_TINYOL_GetLastFlashTestChecksum());
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+  } else {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "TINYOL,FLASHTEST_FAIL,%u,%d",
+             (unsigned int)SIL_APP_TINYOL_GetLastFlashOpStage(), (int)err);
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+  }
+}
+
+static void SIL_ATCMDS_DispatchSilolHeadDump(uint8_t *buf, uint16_t len) {
+  (void)buf;
+  (void)len;
+  SIL_ATCMDS_SendSilTinyolHeadDump(ATCMDS_IO_TOPC);
+}
+
+static void SIL_ATCMDS_DispatchSilolHeadMode(uint8_t *buf, uint16_t len) {
+  uint8_t *d;
+  uint8_t *p = buf;
+  uint32_t offset = 0;
+  fsp_err_t err = FSP_ERR_INVALID_ARGUMENT;
+
+  (void)len;
+
+  d = (uint8_t *)SIL_ATCMDS_CutCommand((char *)p, &offset);
+  if (d == NULL) {
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,HEADMODE_FAIL,ARG");
+    return;
+  }
+
+  if ((strncmp((char *)p, "ACTIVE", strlen("ACTIVE")) == 0) ||
+      (strncmp((char *)p, "1", strlen("1")) == 0) ||
+      (strncmp((char *)p, "ON", strlen("ON")) == 0)) {
+    err = SIL_APP_TINYOL_SelectHeadMode(1U);
+    if (err == FSP_SUCCESS) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,HEADMODE,ACTIVE_OK");
+    } else {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,HEADMODE,ACTIVE_FALLBACK_DEFAULT");
+    }
+    return;
+  }
+
+  if ((strncmp((char *)p, "DEFAULT", strlen("DEFAULT")) == 0) ||
+      (strncmp((char *)p, "0", strlen("0")) == 0) ||
+      (strncmp((char *)p, "OFF", strlen("OFF")) == 0)) {
+    err = SIL_APP_TINYOL_SelectHeadMode(0U);
+    if (err == FSP_SUCCESS) {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,HEADMODE,DEFAULT_OK");
+    } else {
+      SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,HEADMODE,DEFAULT_FAIL");
+    }
+    return;
+  }
+
+  SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,HEADMODE_FAIL,MODE");
+}
+
 // $SILSWRT,20240130,3,16,32,2*79\r\n
 static void SIL_ATCMDS_DispatchSilswrb(uint8_t *buf, uint16_t len) {
   uint8_t *d;
@@ -936,6 +1306,46 @@ void SIL_ATCMDS_DispatchCmds(sil_atcmds_io_e io, sil_atcmds_cmds_in_e cmd,
 
   case ATCMDS_CMDS_IN_SILOLREC_E:
     SIL_ATCMDS_DispatchSilolRec((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLREPLAY_E:
+    SIL_ATCMDS_DispatchSilolReplay((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLRUN_E:
+    SIL_ATCMDS_DispatchSilolRun((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLVAL_E:
+    SIL_ATCMDS_DispatchSilolVal((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLRESULT_E:
+    SIL_ATCMDS_DispatchSilolResult((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLAPPLY_E:
+    SIL_ATCMDS_DispatchSilolApply((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLERASE_E:
+    SIL_ATCMDS_DispatchSilolErase((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLROLLBACK_E:
+    SIL_ATCMDS_DispatchSilolRollback((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLFLASHTEST_E:
+    SIL_ATCMDS_DispatchSilolFlashTest((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLHEADDUMP_E:
+    SIL_ATCMDS_DispatchSilolHeadDump((uint8_t *)buf, len);
+    break;
+
+  case ATCMDS_CMDS_IN_SILOLHEADMODE_E:
+    SIL_ATCMDS_DispatchSilolHeadMode((uint8_t *)buf, len);
     break;
 
   case ATCMDS_CMDS_IN_SILAPP_E:

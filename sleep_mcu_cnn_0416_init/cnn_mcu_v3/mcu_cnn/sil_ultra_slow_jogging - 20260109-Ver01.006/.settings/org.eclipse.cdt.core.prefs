@@ -7,7 +7,7 @@ environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_IMAGE_SIGNING_KEY/value=${workspace_loc\:cnn_ota_bl}/ra/mcu-tools/MCUboot/root-ec-p256.pem
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_IMAGE_VERSION/delimiter=;
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_IMAGE_VERSION/operation=replace
-environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_IMAGE_VERSION/value=1.1.0
+environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_IMAGE_VERSION/value=1.1.1
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/append=true
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/appendContributed=true
 org.eclipse.cdt.core.formatter.align_composite_type_declarators=false

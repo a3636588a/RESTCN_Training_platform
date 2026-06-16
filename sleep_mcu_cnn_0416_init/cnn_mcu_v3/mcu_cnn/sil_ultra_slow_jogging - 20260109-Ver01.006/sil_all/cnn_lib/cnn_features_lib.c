@@ -28,6 +28,36 @@ static inline float compute_dn(uint16_t row, uint16_t base, uint16_t holdavg) {
     return d / (span + CNN_EPS);
 }
 
+static void compute_features_from_window_core(
+    const uint16_t window_u16[CNN_WIN_LEN][CNN_CH_USED],
+    const uint16_t *base_u16,
+    const uint16_t *holdavg_u16,
+    float *out_waveform,
+    float *out_variance,
+    float *out_mean) {
+    for (uint8_t ch = 0; ch < (uint8_t)CNN_CH_USED; ch++) {
+        float sum = 0.0f;
+        float sum_sq = 0.0f;
+        float prev_v = 0.0f;
+        for (uint16_t i = 0; i < (uint16_t)CNN_WIN_LEN; i++) {
+            float v = compute_dn(window_u16[i][ch], base_u16[ch], holdavg_u16[ch]);
+            out_waveform[i * (uint16_t)CNN_INPUT_CH_TOTAL + ch] = v;
+            if (i == 0) {
+                out_waveform[i * (uint16_t)CNN_INPUT_CH_TOTAL + (uint16_t)CNN_INPUT_CH_LEVEL + ch] = 0.0f;
+            } else {
+                out_waveform[i * (uint16_t)CNN_INPUT_CH_TOTAL + (uint16_t)CNN_INPUT_CH_LEVEL + ch] = (v - prev_v) * CNN_SLOPE_FACTOR;
+            }
+            prev_v = v;
+            sum += v;
+            sum_sq += v * v;
+        }
+        float avg = sum / (float)CNN_WIN_LEN;
+        float var = (sum_sq / (float)CNN_WIN_LEN) - (avg * avg);
+        out_mean[ch] = avg;
+        out_variance[ch] = (var > 0.0f) ? var : 0.0f;
+    }
+}
+
 bool cnn_compute_features(
     cnn_feat_ctx_t *ctx,
     const uint16_t *row_u16,
@@ -75,5 +105,19 @@ bool cnn_compute_features(
         out_mean[ch] = avg;
         out_variance[ch] = (var > 0) ? var : 0;
     }
+    return true;
+}
+
+bool cnn_compute_features_from_window(
+    const uint16_t window_u16[CNN_WIN_LEN][CNN_CH_USED],
+    const uint16_t *base_u16,
+    const uint16_t *holdavg_u16,
+    float *out_waveform,
+    float *out_variance,
+    float *out_mean) {
+    if (!window_u16 || !base_u16 || !holdavg_u16 || !out_waveform || !out_variance || !out_mean) {
+        return false;
+    }
+    compute_features_from_window_core(window_u16, base_u16, holdavg_u16, out_waveform, out_variance, out_mean);
     return true;
 }

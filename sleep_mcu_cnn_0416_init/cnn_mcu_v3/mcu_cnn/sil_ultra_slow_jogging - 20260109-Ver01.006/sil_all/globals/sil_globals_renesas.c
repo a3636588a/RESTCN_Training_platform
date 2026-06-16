@@ -151,6 +151,7 @@ void g_uart6_cb(uart_callback_args_t *p_args) {
 void g_flash0_cb(flash_callback_args_t *p_args) {
 	
 	SIL_FLASH_DATA_Callback(p_args);
+	SIL_APP_TINYOL_FlashCallback(p_args);
 	
 }
 

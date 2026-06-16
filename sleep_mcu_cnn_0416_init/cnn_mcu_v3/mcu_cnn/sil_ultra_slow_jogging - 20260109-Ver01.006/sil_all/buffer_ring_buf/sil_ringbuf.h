@@ -18,7 +18,7 @@ void R_BSP_WarmStart(bsp_warm_start_event_t event) __attribute__((weak));
 #endif
 // */
 
-#define SILCNTS_RINGBUF_SIZE_DEFAULT 512
+#define SILCNTS_RINGBUF_SIZE_DEFAULT 4096
 
 typedef struct SIL_RINGBUF_S {
 	bool initialized;

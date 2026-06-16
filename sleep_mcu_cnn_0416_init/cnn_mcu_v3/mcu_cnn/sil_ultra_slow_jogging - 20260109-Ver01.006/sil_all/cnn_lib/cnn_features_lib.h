@@ -40,4 +40,12 @@ bool cnn_compute_features(
     float *out_variance,
     float *out_mean);
 
+bool cnn_compute_features_from_window(
+    const uint16_t window_u16[CNN_WIN_LEN][CNN_CH_USED],
+    const uint16_t *base_u16,
+    const uint16_t *holdavg_u16,
+    float *out_waveform,
+    float *out_variance,
+    float *out_mean);
+
 #endif

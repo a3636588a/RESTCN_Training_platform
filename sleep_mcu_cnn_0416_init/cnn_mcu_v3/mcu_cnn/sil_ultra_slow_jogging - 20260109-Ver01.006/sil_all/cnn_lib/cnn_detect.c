@@ -1,6 +1,7 @@
 #include "cnn_detect.h"
 #include "cnn_weights.h"
 #include "cnn_features_lib.h"
+#include "../app/sil_app_tinyol.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
@@ -104,7 +105,10 @@ int cnn_detect_init(void) {
     return 0;
 }
 
-int cnn_detect_predict(const float *waveform_in, const float *var_in, const float *mean_in, float *proba_out) {
+bool cnn_detect_forward_cache(const float *waveform_in, const float *var_in, const float *mean_in, cnn_detect_cache_t *cache) {
+    if (!waveform_in || !var_in || !mean_in || !cache) {
+        return false;
+    }
     // L1: Conv1D (WIN, CH) -> (WIN, 48) -> SE -> MaxPool(WIN/2, 48)
     int l1_len = (int)CNN_WIN_LEN;
     conv1d_same_padding(waveform_in, l1_len, (int)CNN_INPUT_CH_TOTAL, CONV1_W, CONV1_B, 48, 5, workspace_a);
@@ -161,29 +165,44 @@ int cnn_detect_predict(const float *waveform_in, const float *var_in, const floa
     }
 
     // Bottleneck F2: 128 -> 64
-    float f2_out[64];
+    const float *dense_f2_w = SIL_APP_TINYOL_GetDenseF2Weights();
+    const float *dense_f2_b = SIL_APP_TINYOL_GetDenseF2Bias();
+    const float *dense_out_w = SIL_APP_TINYOL_GetDenseOutWeights();
+    const float *dense_out_b = SIL_APP_TINYOL_GetDenseOutBias();
     for (int oc = 0; oc < 64; oc++) {
-        float sum = DENSE_F2_B[oc];
-        for (int ic = 0; ic < 128; ic++) sum += f1_out[ic] * DENSE_F2_W[ic * 64 + oc];
-        f2_out[oc] = (sum > 0) ? sum : sum * 0.1f;
+        float sum = dense_f2_b[oc];
+        for (int ic = 0; ic < 128; ic++) sum += f1_out[ic] * dense_f2_w[ic * 64 + oc];
+        cache->f2_z[oc] = sum;
+        cache->f2_out[oc] = (sum > 0) ? sum : sum * 0.1f;
     }
+    memcpy(cache->f1_out, f1_out, sizeof(f1_out));
 
     // Final Dense (Softmax Output): 64 -> CNN_OUT_DIM
-    float scores[CNN_OUT_DIM];
     float max_score = -1e30f;
     for (int oc = 0; oc < (int)CNN_OUT_DIM; oc++) {
-        float sum = DENSE_OUT_B[oc];
-        for (int ic = 0; ic < 64; ic++) sum += f2_out[ic] * DENSE_OUT_W[ic * CNN_OUT_DIM + oc];
-        scores[oc] = sum;
+        float sum = dense_out_b[oc];
+        for (int ic = 0; ic < 64; ic++) sum += cache->f2_out[ic] * dense_out_w[ic * CNN_OUT_DIM + oc];
+        cache->logits[oc] = sum;
         if (sum > max_score) max_score = sum;
     }
 
     float exp_sum = 0;
     for (int i = 0; i < (int)CNN_OUT_DIM; i++) {
-        scores[i] = expf(scores[i] - max_score);
-        exp_sum += scores[i];
+        cache->proba[i] = expf(cache->logits[i] - max_score);
+        exp_sum += cache->proba[i];
     }
-    for (int i = 0; i < (int)CNN_OUT_DIM; i++) proba_out[i] = scores[i] / exp_sum;
+    for (int i = 0; i < (int)CNN_OUT_DIM; i++) cache->proba[i] /= exp_sum;
+    return true;
+}
+
+int cnn_detect_predict(const float *waveform_in, const float *var_in, const float *mean_in, float *proba_out) {
+    cnn_detect_cache_t cache;
+    if (!cnn_detect_forward_cache(waveform_in, var_in, mean_in, &cache)) {
+        return -1;
+    }
+    for (int i = 0; i < (int)CNN_OUT_DIM; i++) {
+        proba_out[i] = cache.proba[i];
+    }
 
     return 0;
 }

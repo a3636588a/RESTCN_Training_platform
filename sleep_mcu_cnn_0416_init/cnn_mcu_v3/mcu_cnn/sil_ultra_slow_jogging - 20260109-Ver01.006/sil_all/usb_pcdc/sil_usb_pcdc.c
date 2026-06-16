@@ -42,7 +42,7 @@ static uint8_t                      g_usb_read_buf[USB_READ_BUF_SIZE];
 /* OTA engine state variables matching user's ota_usb_ui.py */
 static bool                         g_ota_active = false;
 static uint32_t                     g_ota_expected_size = 0;
-static uint32_t                     g_ota_write_addr = 0x00088000;
+static uint32_t                     g_ota_write_addr = 0x00078000;
 static uint32_t                     g_ota_received_bytes = 0;
 static uint32_t                     g_ota_last_prog = 0;
 
@@ -479,7 +479,7 @@ void SIL_USB_PCDC_EventPoll(void)
                         {
                             /* VTOR Address tells us which image is running */
                             uint32_t vtor_addr = SCB->VTOR;
-                            int app_num = (vtor_addr >= 0x00080000) ? 2 : 1;
+                            int app_num = (vtor_addr >= 0x00078000) ? 2 : 1;
                             char info_msg[64];
                             int info_len = snprintf(info_msg, sizeof(info_msg), "App %d is running! (VTOR: 0x%08X)\n", app_num, (unsigned int)vtor_addr);
                             SIL_USB_PCDC_Write((uint8_t *)info_msg, (uint32_t)info_len);
@@ -491,7 +491,7 @@ void SIL_USB_PCDC_EventPoll(void)
                             R_FLASH_HP_Open(&g_flash0_ctrl, &g_flash0_cfg);
                             
                             __disable_irq();
-                            fsp_err_t erase_err = R_FLASH_HP_Erase(&g_flash0_ctrl, 0x00088000, 15);
+                            fsp_err_t erase_err = R_FLASH_HP_Erase(&g_flash0_ctrl, 0x00078000, 14);
                             __enable_irq();
                             
                             if (FSP_SUCCESS == erase_err)
@@ -508,10 +508,10 @@ void SIL_USB_PCDC_EventPoll(void)
                             uint32_t expected_size = 0;
                             sscanf((char *)g_usb_read_buf + 5, "%lu", (unsigned long *)&expected_size);
                             
-                            if (expected_size > 0 && expected_size <= 0x78000)
+                            if (expected_size > 0 && expected_size <= 0x70000)
                             {
                                 g_ota_expected_size = expected_size;
-                                g_ota_write_addr = 0x00088000;
+                                g_ota_write_addr = 0x00078000;
                                 g_ota_received_bytes = 0;
                                 g_ota_temp_count = 0;
                                 g_ota_last_prog = 0;
@@ -608,7 +608,7 @@ void SIL_USB_PCDC_EventPoll(void)
                                 
                                 R_FLASH_HP_Close(&g_flash0_ctrl);
                                 
-                                uint32_t calculated_crc = calculate_crc32((const uint8_t *)0x00088000, g_ota_received_bytes);
+                                uint32_t calculated_crc = calculate_crc32((const uint8_t *)0x00078000, g_ota_received_bytes);
                                 
                                 char done_msg[128];
                                 int d_len = snprintf(done_msg, sizeof(done_msg), "DONE:%lu\nCRC:%08X\n", 

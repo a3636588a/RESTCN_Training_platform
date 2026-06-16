@@ -23,6 +23,7 @@ typedef enum SIL_APP_TYPE_E {
 	SIL_APP_FP_E = 2,		// Force Plate
 	SIL_APP_GLOVE_ML_E = 3,	// [Sean] Glove ML Application
 	SIL_APP_DS_E = 4,		// [Sean] Direct Sensor HID Control Mode
+	SIL_APP_TINYOL_E = 5,	// [Sean] Tiny Online Learning Mode
 
 	SIL_APP_FINAL_E,
 	SIL_APP_MAXS_E = (SIL_APP_FINAL_E + 2)

@@ -2,16 +2,88 @@
 
 #include "..\app\sil_app_touch.h"
 #include "..\cnn_lib\cnn_model_data.h"
+#include "..\cnn_lib\cnn_features_lib.h"
+#include "..\cnn_lib\cnn_detect.h"
+#include "..\cnn_lib\tinyol_default_windows.h"
 #include "..\protocol_atcmds\sil_atcmds.h"
 #include "..\uart_dtc\sil_uart_dtc_topc.h"
+#include "r_flash_hp.h"
+#include <math.h>
+#include <stdio.h>
 #include <string.h>
 
+extern const float DENSE_F2_W[];
+extern const float DENSE_F2_B[];
+extern const float DENSE_OUT_W[];
+extern const float DENSE_OUT_B[];
+extern flash_hp_instance_ctrl_t g_flash0_ctrl;
+extern const flash_cfg_t g_flash0_cfg;
+
 static sil_app_tinyol_s g_tinyol = {0};
+
+#define TINYOL_VALIDATE_TARGET_RECALL_MIN 0.90f
+#define TINYOL_VALIDATE_OVERALL_ACC_MIN   0.90f
+
+#define TINYOL_HEAD_MAGIC 0x4C594E54U /* TNYL */
+#define TINYOL_HEAD_VERSION 20240130U
+#define TINYOL_HEAD_F2_W_COUNT 8192U
+#define TINYOL_HEAD_F2_B_COUNT 64U
+#define TINYOL_HEAD_OUT_W_COUNT (64U * (uint32_t)CNN_OUT_DIM)
+#define TINYOL_HEAD_OUT_B_COUNT ((uint32_t)CNN_OUT_DIM)
+#define TINYOL_HEAD_WRITE_CHUNK_MAX 256U
+#define TINYOL_FLASHTEST_BUFFER_MAX 32768U
+#define TINYOL_FLASHTEST_TEXT "TINYOL_NEXT_BLOCK_TEST"
+
+typedef struct SIL_APP_TINYOL_HEAD_FLASH_S {
+    uint32_t magic;
+    uint32_t head_version;
+    uint32_t active_weight_slot;
+    uint32_t active_head_exists;
+    uint32_t active_weight_enabled;
+    uint32_t f2_w_count;
+    uint32_t f2_b_count;
+    uint32_t out_w_count;
+    uint32_t out_b_count;
+    uint32_t weight_bytes;
+    uint32_t checksum;
+    float dense_f2_w[TINYOL_HEAD_F2_W_COUNT];
+    float dense_f2_b[TINYOL_HEAD_F2_B_COUNT];
+    float dense_out_w[TINYOL_HEAD_OUT_W_COUNT];
+    float dense_out_b[TINYOL_HEAD_OUT_B_COUNT];
+} sil_app_tinyol_head_flash_s;
+
+static sil_app_tinyol_head_flash_s g_tinyol_head = {0};
+static uint8_t g_tinyol_head_initialized = 0;
+static uint8_t g_tinyol_head_exists = 0;
+static uint8_t g_tinyol_head_enabled = 0;
+static volatile uint8_t g_tinyol_flash_erase_done = 0;
+static volatile uint8_t g_tinyol_flash_write_done = 0;
+static volatile uint8_t g_tinyol_flash_error = 0;
+static volatile uint8_t g_tinyol_flash_op_active = 0;
+static uint8_t g_tinyol_last_flash_op_stage = 0;
+static uint32_t g_tinyol_last_flash_op_error = 0;
+static uint32_t g_tinyol_last_flash_test_checksum = 0;
+static uint32_t g_tinyol_last_flash_test_addr = 0;
+static float g_tinyol_grad_f2_w[TINYOL_HEAD_F2_W_COUNT];
+static float g_tinyol_grad_f2_b[TINYOL_HEAD_F2_B_COUNT];
+static float g_tinyol_grad_out_w[TINYOL_HEAD_OUT_W_COUNT];
+static float g_tinyol_grad_out_b[TINYOL_HEAD_OUT_B_COUNT];
+static uint8_t g_tinyol_flashtest_write_buf[TINYOL_FLASHTEST_BUFFER_MAX];
 
 #define TINYOL_NOTIFY_BASE_TICKS 250U
 #define TINYOL_CALIB_BASE_TICKS 500U
 #define TINYOL_NOTIFY_HOLD_TICKS 250U
 #define TINYOL_CALIB_HOLD_TICKS 500U
+
+static void SIL_APP_TINYOL_EnsureHeadInitialized(void);
+static void SIL_APP_TINYOL_LoadDefaultHead(void);
+static uint32_t SIL_APP_TINYOL_HeadChecksum(const sil_app_tinyol_head_flash_s *head);
+static fsp_err_t SIL_APP_TINYOL_ApplyActiveHeadToFlash(void);
+static fsp_err_t SIL_APP_TINYOL_ReadActiveHeadFromFlash(void);
+static void SIL_APP_TINYOL_UpdateHeadStatusFlags(void);
+static void SIL_APP_TINYOL_SetLastFlashOp(uint8_t stage, fsp_err_t err);
+fsp_err_t SIL_APP_TINYOL_RunFlashBlockTest(void);
+extern const flash_instance_t g_flash0;
 
 static void SIL_APP_TINYOL_SendAck(const char *topic)
 {
@@ -40,6 +112,508 @@ static void SIL_APP_TINYOL_SendHandshake(void)
     SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,RECALIBRATE_BASE_HOLD");
     SIL_ATCMDS_SendSilTinyolLabelTable(ATCMDS_IO_TOPC, CNN_GESTURE_NAMES, CNN_OUT_DIM);
     SIL_APP_TINYOL_SendAck("TINYOL,ENTER");
+}
+
+static uint32_t SIL_APP_TINYOL_HeadChecksum(const sil_app_tinyol_head_flash_s *head)
+{
+    const uint8_t *bytes;
+    uint32_t checksum = 0;
+    uint32_t i;
+    uint32_t length;
+
+    if (!head) {
+        return 0;
+    }
+
+    bytes = (const uint8_t *)&head->dense_f2_w[0];
+    length = (uint32_t)(sizeof(head->dense_f2_w) + sizeof(head->dense_f2_b) +
+                        sizeof(head->dense_out_w) + sizeof(head->dense_out_b));
+    for (i = 0; i < length; i++) {
+        checksum ^= bytes[i];
+        checksum = (checksum << 1) | (checksum >> 31);
+    }
+    return checksum;
+}
+
+static void SIL_APP_TINYOL_LoadDefaultHead(void)
+{
+    memcpy(g_tinyol_head.dense_f2_w, DENSE_F2_W, sizeof(g_tinyol_head.dense_f2_w));
+    memcpy(g_tinyol_head.dense_f2_b, DENSE_F2_B, sizeof(g_tinyol_head.dense_f2_b));
+    memcpy(g_tinyol_head.dense_out_w, DENSE_OUT_W, sizeof(g_tinyol_head.dense_out_w));
+    memcpy(g_tinyol_head.dense_out_b, DENSE_OUT_B, sizeof(g_tinyol_head.dense_out_b));
+    g_tinyol_head.magic = TINYOL_HEAD_MAGIC;
+    g_tinyol_head.head_version = TINYOL_HEAD_VERSION;
+    g_tinyol_head.active_weight_slot = 0;
+    g_tinyol_head.active_head_exists = 0;
+    g_tinyol_head.active_weight_enabled = 0;
+    g_tinyol_head.f2_w_count = TINYOL_HEAD_F2_W_COUNT;
+    g_tinyol_head.f2_b_count = TINYOL_HEAD_F2_B_COUNT;
+    g_tinyol_head.out_w_count = TINYOL_HEAD_OUT_W_COUNT;
+    g_tinyol_head.out_b_count = TINYOL_HEAD_OUT_B_COUNT;
+    g_tinyol_head.weight_bytes = (uint32_t)(sizeof(g_tinyol_head.dense_f2_w) +
+                                            sizeof(g_tinyol_head.dense_f2_b) +
+                                            sizeof(g_tinyol_head.dense_out_w) +
+                                            sizeof(g_tinyol_head.dense_out_b));
+    g_tinyol_head.checksum = SIL_APP_TINYOL_HeadChecksum(&g_tinyol_head);
+}
+
+static void SIL_APP_TINYOL_EnsureHeadInitialized(void)
+{
+    if (!g_tinyol_head_initialized) {
+        SIL_APP_TINYOL_LoadDefaultHead();
+        g_tinyol_head_initialized = 1;
+        (void)SIL_APP_TINYOL_ReadActiveHeadFromFlash();
+    }
+}
+
+static void SIL_APP_TINYOL_UpdateHeadStatusFlags(void)
+{
+    g_tinyol_head_exists = (g_tinyol_head.active_head_exists != 0U) ? 1U : 0U;
+    g_tinyol_head_enabled = (g_tinyol_head.active_weight_enabled != 0U) ? 1U : 0U;
+}
+
+static void SIL_APP_TINYOL_FillFlashTestString(uint8_t *buf, uint32_t len, uint32_t addr)
+{
+    if (!buf || (len == 0U)) {
+        return;
+    }
+
+    memset(buf, 0xFF, len);
+    (void)snprintf((char *)buf, len, "%s @0x%08lX", TINYOL_FLASHTEST_TEXT, (unsigned long)addr);
+}
+
+static void SIL_APP_TINYOL_SetLastFlashOp(uint8_t stage, fsp_err_t err)
+{
+    g_tinyol_last_flash_op_stage = stage;
+    g_tinyol_last_flash_op_error = (uint32_t)err;
+}
+
+static void SIL_APP_TINYOL_SendFlashTestTrace(const char *phase, uint32_t addr, uint32_t len, fsp_err_t err)
+{
+    char msg[160];
+
+    if (!phase) {
+        phase = "UNKNOWN";
+    }
+
+    snprintf(msg, sizeof(msg), "TINYOL,FLASHTEST,%s,addr=0x%08lX,len=%lu,err=%d,FAWMON=0x%08lX,FSTATR=0x%08lX",
+             phase,
+             (unsigned long)addr,
+             (unsigned long)len,
+             (int)err,
+             (unsigned long)R_FACI_HP->FAWMON,
+             (unsigned long)R_FACI_HP->FSTATR);
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+}
+
+static void SIL_APP_TINYOL_SendFlashOpTrace(const char *phase, uint32_t addr, uint32_t len, uint32_t value)
+{
+    char msg[160];
+
+    if (!phase) {
+        phase = "UNKNOWN";
+    }
+
+    snprintf(msg, sizeof(msg), "TINYOL,FLASH,%s,addr=0x%08lX,len=%lu,val=%lu,FAWMON=0x%08lX,FSTATR=0x%08lX",
+             phase,
+             (unsigned long)addr,
+             (unsigned long)len,
+             (unsigned long)value,
+             (unsigned long)R_FACI_HP->FAWMON,
+             (unsigned long)R_FACI_HP->FSTATR);
+    SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+}
+
+static const uint16_t (*SIL_APP_TINYOL_GetDefaultWindow(uint16_t label))[CNN_CH_USED]
+{
+    switch (label) {
+    case 0: return tinyol_default_cls_0_windows[0];
+    case 1: return tinyol_default_cls_1_windows[0];
+    case 2: return tinyol_default_cls_2_windows[0];
+    case 3: return tinyol_default_cls_3_windows[0];
+    case 4: return tinyol_default_cls_4_windows[0];
+    case 5: return tinyol_default_cls_5_windows[0];
+    case 6: return tinyol_default_cls_6_windows[0];
+    default: return tinyol_default_cls_0_windows[0];
+    }
+}
+
+static const uint16_t *SIL_APP_TINYOL_GetDefaultBase(uint16_t label)
+{
+    switch (label) {
+    case 0: return tinyol_default_cls_0_base[0];
+    case 1: return tinyol_default_cls_1_base[0];
+    case 2: return tinyol_default_cls_2_base[0];
+    case 3: return tinyol_default_cls_3_base[0];
+    case 4: return tinyol_default_cls_4_base[0];
+    case 5: return tinyol_default_cls_5_base[0];
+    case 6: return tinyol_default_cls_6_base[0];
+    default: return tinyol_default_cls_0_base[0];
+    }
+}
+
+static const uint16_t *SIL_APP_TINYOL_GetDefaultHold(uint16_t label)
+{
+    switch (label) {
+    case 0: return tinyol_default_cls_0_hold[0];
+    case 1: return tinyol_default_cls_1_hold[0];
+    case 2: return tinyol_default_cls_2_hold[0];
+    case 3: return tinyol_default_cls_3_hold[0];
+    case 4: return tinyol_default_cls_4_hold[0];
+    case 5: return tinyol_default_cls_5_hold[0];
+    case 6: return tinyol_default_cls_6_hold[0];
+    default: return tinyol_default_cls_0_hold[0];
+    }
+}
+
+static void SIL_APP_TINYOL_CopyRecordedWindow(uint16_t slot, uint16_t window[TINYOL_RECORD_MAX_SAMPLES][TINYOL_RECORD_CHS])
+{
+    uint16_t i;
+    uint16_t ch;
+    uint16_t start = g_tinyol.window_start_offset;
+    if (start + CNN_WIN_LEN > TINYOL_RECORD_MAX_SAMPLES) {
+        start = (uint16_t)(TINYOL_RECORD_MAX_SAMPLES - CNN_WIN_LEN);
+    }
+    if (slot >= TINYOL_RECORD_MAX_SLOTS) {
+        memset(window, 0, sizeof(uint16_t) * CNN_WIN_LEN * TINYOL_RECORD_CHS);
+        return;
+    }
+    for (i = 0; i < CNN_WIN_LEN; i++) {
+        for (ch = 0; ch < TINYOL_RECORD_CHS; ch++) {
+            window[i][ch] = g_tinyol.record_raw[slot][start + i][ch];
+        }
+    }
+}
+
+static bool SIL_APP_TINYOL_BuildFeatureSampleFromDefault(uint16_t label,
+                                                         float *waveform,
+                                                         float *variance,
+                                                         float *mean) {
+    const uint16_t (*window)[CNN_CH_USED] = SIL_APP_TINYOL_GetDefaultWindow(label);
+    const uint16_t *base = SIL_APP_TINYOL_GetDefaultBase(label);
+    const uint16_t *hold = SIL_APP_TINYOL_GetDefaultHold(label);
+    uint16_t window_5[CNN_WIN_LEN][CNN_CH_USED];
+    uint16_t i;
+    uint16_t ch;
+
+    for (i = 0; i < CNN_WIN_LEN; i++) {
+        for (ch = 0; ch < CNN_CH_USED; ch++) {
+            window_5[i][ch] = window[i][ch];
+        }
+    }
+    return cnn_compute_features_from_window(window_5, base, hold, waveform, variance, mean);
+}
+
+static bool SIL_APP_TINYOL_BuildFeatureSampleFromTarget(uint16_t slot,
+                                                        float *waveform,
+                                                        float *variance,
+                                                        float *mean) {
+    uint16_t window_5[CNN_WIN_LEN][CNN_CH_USED];
+    uint16_t i;
+    uint16_t ch;
+    uint16_t start = g_tinyol.window_start_offset;
+
+    if (start + CNN_WIN_LEN > TINYOL_RECORD_MAX_SAMPLES) {
+        start = (uint16_t)(TINYOL_RECORD_MAX_SAMPLES - CNN_WIN_LEN);
+    }
+    if (slot >= g_tinyol.record_capture_count) {
+        return false;
+    }
+    for (i = 0; i < CNN_WIN_LEN; i++) {
+        for (ch = 0; ch < CNN_CH_USED; ch++) {
+            window_5[i][ch] = g_tinyol.record_raw[slot][start + i][ch];
+        }
+    }
+    return cnn_compute_features_from_window(window_5, g_tinyol.base_avg, g_tinyol.hold_avg, waveform, variance, mean);
+}
+
+static void SIL_APP_TINYOL_ClearGradients(void)
+{
+    memset(g_tinyol_grad_f2_w, 0, sizeof(g_tinyol_grad_f2_w));
+    memset(g_tinyol_grad_f2_b, 0, sizeof(g_tinyol_grad_f2_b));
+    memset(g_tinyol_grad_out_w, 0, sizeof(g_tinyol_grad_out_w));
+    memset(g_tinyol_grad_out_b, 0, sizeof(g_tinyol_grad_out_b));
+}
+
+static void SIL_APP_TINYOL_ApplyGradients(uint16_t batch_count)
+{
+    float scale;
+    uint32_t i;
+
+    if (batch_count == 0U) {
+        return;
+    }
+    scale = g_tinyol.learning_rate / (float)batch_count;
+    for (i = 0; i < TINYOL_HEAD_F2_W_COUNT; i++) {
+        g_tinyol_head.dense_f2_w[i] -= scale * g_tinyol_grad_f2_w[i];
+        g_tinyol_grad_f2_w[i] = 0.0f;
+    }
+    for (i = 0; i < TINYOL_HEAD_F2_B_COUNT; i++) {
+        g_tinyol_head.dense_f2_b[i] -= scale * g_tinyol_grad_f2_b[i];
+        g_tinyol_grad_f2_b[i] = 0.0f;
+    }
+    for (i = 0; i < TINYOL_HEAD_OUT_W_COUNT; i++) {
+        g_tinyol_head.dense_out_w[i] -= scale * g_tinyol_grad_out_w[i];
+        g_tinyol_grad_out_w[i] = 0.0f;
+    }
+    for (i = 0; i < TINYOL_HEAD_OUT_B_COUNT; i++) {
+        g_tinyol_head.dense_out_b[i] -= scale * g_tinyol_grad_out_b[i];
+        g_tinyol_grad_out_b[i] = 0.0f;
+    }
+}
+
+static void SIL_APP_TINYOL_AccumulateSampleGradients(const cnn_detect_cache_t *cache,
+                                                     uint16_t label)
+{
+    float dz3[CNN_OUT_DIM];
+    float da2[64];
+    float dz2[64];
+    float prob = cache->proba[label];
+    uint32_t i;
+    uint32_t j;
+    uint32_t k;
+
+    if (prob < 1.0e-6f) {
+        prob = 1.0e-6f;
+    }
+
+    for (k = 0; k < CNN_OUT_DIM; k++) {
+        dz3[k] = cache->proba[k] - ((k == label) ? 1.0f : 0.0f);
+        g_tinyol_grad_out_b[k] += dz3[k];
+    }
+
+    for (j = 0; j < 64U; j++) {
+        float sum = 0.0f;
+        for (k = 0; k < CNN_OUT_DIM; k++) {
+            sum += dz3[k] * g_tinyol_head.dense_out_w[j * CNN_OUT_DIM + k];
+            g_tinyol_grad_out_w[j * CNN_OUT_DIM + k] += cache->f2_out[j] * dz3[k];
+        }
+        da2[j] = sum;
+        dz2[j] = (cache->f2_z[j] > 0.0f) ? da2[j] : (da2[j] * 0.1f);
+        g_tinyol_grad_f2_b[j] += dz2[j];
+    }
+
+    for (i = 0; i < 128U; i++) {
+        for (j = 0; j < 64U; j++) {
+            g_tinyol_grad_f2_w[i * 64U + j] += cache->f1_out[i] * dz2[j];
+        }
+    }
+}
+
+void SIL_APP_TINYOL_FlashCallback(flash_callback_args_t *p_args)
+{
+    if (!p_args) {
+        return;
+    }
+    if (g_tinyol_flash_op_active == 0U) {
+        return;
+    }
+
+    switch (p_args->event) {
+    case FLASH_EVENT_ERASE_COMPLETE:
+        g_tinyol_flash_erase_done = 1U;
+        SIL_APP_TINYOL_SetLastFlashOp(5U, FSP_SUCCESS);
+        break;
+    case FLASH_EVENT_WRITE_COMPLETE:
+        g_tinyol_flash_write_done = 1U;
+        SIL_APP_TINYOL_SetLastFlashOp(6U, FSP_SUCCESS);
+        break;
+    case FLASH_EVENT_BLANK:
+    case FLASH_EVENT_NOT_BLANK:
+        break;
+    default:
+        g_tinyol_flash_error = 1U;
+        SIL_APP_TINYOL_SetLastFlashOp(7U, (fsp_err_t)p_args->event);
+        break;
+    }
+}
+
+static fsp_err_t SIL_APP_TINYOL_ReadActiveHeadFromFlash(void)
+{
+    const sil_app_tinyol_head_flash_s *stored;
+    sil_app_tinyol_head_flash_s temp;
+    uint32_t checksum;
+
+    stored = (const sil_app_tinyol_head_flash_s *)(uintptr_t)TINYOL_ACTIVE_HEAD_FLASH_ADDR;
+    memcpy(&temp, stored, sizeof(temp));
+
+    if ((temp.magic != TINYOL_HEAD_MAGIC) ||
+        (temp.head_version != TINYOL_HEAD_VERSION) ||
+        (temp.f2_w_count != TINYOL_HEAD_F2_W_COUNT) ||
+        (temp.f2_b_count != TINYOL_HEAD_F2_B_COUNT) ||
+        (temp.out_w_count != TINYOL_HEAD_OUT_W_COUNT) ||
+        (temp.out_b_count != TINYOL_HEAD_OUT_B_COUNT) ||
+        (temp.weight_bytes != (uint32_t)(sizeof(temp.dense_f2_w) +
+                                         sizeof(temp.dense_f2_b) +
+                                         sizeof(temp.dense_out_w) +
+                                         sizeof(temp.dense_out_b)))) {
+        g_tinyol_head.active_head_exists = 0U;
+        g_tinyol_head.active_weight_enabled = 0U;
+        SIL_APP_TINYOL_UpdateHeadStatusFlags();
+        return FSP_ERR_INVALID_DATA;
+    }
+
+    checksum = SIL_APP_TINYOL_HeadChecksum(&temp);
+    if (checksum != temp.checksum) {
+        g_tinyol_head.active_head_exists = 0U;
+        g_tinyol_head.active_weight_enabled = 0U;
+        SIL_APP_TINYOL_UpdateHeadStatusFlags();
+        return FSP_ERR_INVALID_DATA;
+    }
+
+    g_tinyol_head = temp;
+    g_tinyol_head.active_head_exists = 1U;
+    g_tinyol_head.active_weight_enabled = 1U;
+    SIL_APP_TINYOL_UpdateHeadStatusFlags();
+    return FSP_SUCCESS;
+}
+
+static void SIL_APP_TINYOL_ResetFlashWaitFlags(void)
+{
+    g_tinyol_flash_erase_done = 0U;
+    g_tinyol_flash_write_done = 0U;
+    g_tinyol_flash_error = 0U;
+}
+
+static fsp_err_t SIL_APP_TINYOL_WaitForFlashDone(volatile uint8_t *flag)
+{
+    uint32_t timeout = 1000U;
+
+    while ((flag && (*flag == 0U)) && (g_tinyol_flash_error == 0U) && (timeout > 0U)) {
+        R_BSP_SoftwareDelay(1, BSP_DELAY_UNITS_MILLISECONDS);
+        timeout--;
+    }
+
+    if (g_tinyol_flash_error != 0U) {
+        return FSP_ERR_ABORTED;
+    }
+    if ((flag != NULL) && (*flag == 0U)) {
+        return FSP_ERR_ABORTED;
+    }
+    return FSP_SUCCESS;
+}
+
+static fsp_err_t SIL_APP_TINYOL_ApplyActiveHeadToFlash(void)
+{
+    flash_info_t flash_info = {0};
+    uint32_t block_size;
+    uint32_t erase_blocks;
+    uint32_t offset;
+    uint8_t chunk[TINYOL_HEAD_WRITE_CHUNK_MAX] = {0xFF};
+    const uint8_t *src;
+    uint32_t total_bytes;
+    uint32_t write_block_size;
+    fsp_err_t err;
+
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    if (sizeof(g_tinyol_head) > TINYOL_ACTIVE_HEAD_FLASH_SIZE) {
+        SIL_APP_TINYOL_SetLastFlashOp(0U, FSP_ERR_INVALID_DATA);
+        return FSP_ERR_INVALID_DATA;
+    }
+    g_tinyol_flash_op_active = 1U;
+    g_tinyol_head.checksum = SIL_APP_TINYOL_HeadChecksum(&g_tinyol_head);
+    g_tinyol_head.active_head_exists = 1U;
+    g_tinyol_head.active_weight_enabled = 1U;
+    SIL_APP_TINYOL_UpdateHeadStatusFlags();
+
+    /* Unlock flash HP registers */
+    (*(volatile uint32_t *)0x400C4800) |= (1U << 10);
+
+    err = g_flash0.p_api->open(g_flash0.p_ctrl, g_flash0.p_cfg);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(1U, err);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    err = g_flash0.p_api->infoGet(g_flash0.p_ctrl, &flash_info);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, err);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    if ((flash_info.code_flash.num_regions == 0U) || (flash_info.code_flash.p_block_array == NULL)) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, FSP_ERR_INVALID_DATA);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_INVALID_DATA;
+    }
+
+    block_size = flash_info.code_flash.p_block_array->block_size;
+    write_block_size = flash_info.code_flash.p_block_array->block_size_write;
+    if ((write_block_size == 0U) || (write_block_size > TINYOL_HEAD_WRITE_CHUNK_MAX)) {
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_INVALID_DATA;
+    }
+    erase_blocks = (TINYOL_ACTIVE_HEAD_FLASH_SIZE + block_size - 1U) / block_size;
+    SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_START", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
+    SIL_APP_TINYOL_ResetFlashWaitFlags();
+    __disable_irq();
+    err = g_flash0.p_api->erase(g_flash0.p_ctrl, TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks);
+    __enable_irq();
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(3U, err);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
+        return err;
+    }
+    err = SIL_APP_TINYOL_WaitForFlashDone(&g_tinyol_flash_erase_done);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(5U, err);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_WAIT_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
+        return err;
+    }
+    SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_OK", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
+
+    src = (const uint8_t *)&g_tinyol_head;
+    total_bytes = (uint32_t)sizeof(g_tinyol_head);
+    for (offset = 0; offset < TINYOL_ACTIVE_HEAD_FLASH_SIZE; offset += write_block_size) {
+        uint32_t copy_bytes = 0U;
+        uint32_t write_addr = TINYOL_ACTIVE_HEAD_FLASH_ADDR + offset;
+
+        memset(chunk, 0xFF, sizeof(chunk));
+        if (offset < total_bytes) {
+            copy_bytes = total_bytes - offset;
+            if (copy_bytes > write_block_size) {
+                copy_bytes = write_block_size;
+            }
+            memcpy(chunk, &src[offset], copy_bytes);
+        }
+        SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_START", write_addr, write_block_size, copy_bytes);
+        g_tinyol_flash_write_done = 0U;
+        __disable_irq();
+        err = g_flash0.p_api->write(g_flash0.p_ctrl, (uint32_t)chunk, write_addr, write_block_size);
+        __enable_irq();
+        if (err != FSP_SUCCESS) {
+            SIL_APP_TINYOL_SetLastFlashOp(4U, err);
+            g_flash0.p_api->close(g_flash0.p_ctrl);
+            g_tinyol_flash_op_active = 0U;
+            SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_FAIL", write_addr, write_block_size, (uint32_t)err);
+            return err;
+        }
+        err = SIL_APP_TINYOL_WaitForFlashDone(&g_tinyol_flash_write_done);
+        if (err != FSP_SUCCESS) {
+            SIL_APP_TINYOL_SetLastFlashOp(6U, err);
+            g_flash0.p_api->close(g_flash0.p_ctrl);
+            g_tinyol_flash_op_active = 0U;
+            SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_WAIT_FAIL", write_addr, write_block_size, (uint32_t)err);
+            return err;
+        }
+        if (offset == 0U) {
+            SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_OK", write_addr, write_block_size, (uint32_t)chunk[0]);
+        }
+    }
+
+    SIL_APP_TINYOL_SendFlashOpTrace("APPLY_VERIFY_OK", TINYOL_ACTIVE_HEAD_FLASH_ADDR, total_bytes,
+                                     SIL_APP_TINYOL_HeadChecksum(&g_tinyol_head));
+    g_flash0.p_api->close(g_flash0.p_ctrl);
+    g_tinyol_flash_op_active = 0U;
+    SIL_APP_TINYOL_SetLastFlashOp(0U, FSP_SUCCESS);
+    return FSP_SUCCESS;
 }
 
 static void SIL_APP_TINYOL_InitCalibBuffers(void)
@@ -98,7 +672,22 @@ fsp_err_t SIL_APP_TINYOL_Enter1(void)
     g_tinyol.calibration_active = 0;
     g_tinyol.recording_requested = 0;
     g_tinyol.recording_active = 0;
+    g_tinyol.replay_ready = 0;
+    g_tinyol.replay_built = 0;
+    g_tinyol.run_in_progress = 0;
+    g_tinyol.training_done = 0;
+    g_tinyol.validation_in_progress = 0;
+    g_tinyol.validation_done = 0;
+    g_tinyol.result_ready = 0;
+    g_tinyol.validation_passed = 0;
+    g_tinyol.last_train_loss = 0.0f;
+    g_tinyol.last_train_acc = 0.0f;
+    g_tinyol.last_val_loss = 0.0f;
+    g_tinyol.last_val_acc = 0.0f;
+    g_tinyol.last_target_recall = 0.0f;
+    g_tinyol.last_overall_acc = 0.0f;
     g_tinyol.timer_cnt = 0;
+    (void)SIL_APP_TINYOL_LoadActiveHead();
     SIL_APP_TINYOL_InitCalibBuffers();
     SIL_APP_TINYOL_ResetRecordingBuffers();
     return FSP_SUCCESS;
@@ -111,6 +700,11 @@ fsp_err_t SIL_APP_TINYOL_Enter2(void)
         g_tinyol.handshake_sent = 1;
     }
     g_tinyol.state = SIL_APP_TINYOL_STS_READY;
+
+    /* Automatically trigger flash test and save active head on startup */
+    SIL_APP_TINYOL_RunFlashBlockTest();
+    SIL_APP_TINYOL_SaveActiveHead();
+
     return FSP_SUCCESS;
 }
 
@@ -193,6 +787,12 @@ void SIL_APP_TINYOL_MainLoop1(void)
             if (remaining == 0 || g_tinyol.record_slot_cnt >= TINYOL_RECORD_MAX_SLOTS) {
                 g_tinyol.recording_active = 0;
                 g_tinyol.recording_requested = 0;
+                g_tinyol.replay_ready = 0U;
+                g_tinyol.replay_built = 0U;
+                g_tinyol.training_done = 0U;
+                g_tinyol.validation_done = 0U;
+                g_tinyol.result_ready = 0U;
+                g_tinyol.state = SIL_APP_TINYOL_STS_DONE;
                 SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, "TINYOL,REC_ALL_DONE");
             }
         }
@@ -317,6 +917,13 @@ void SIL_APP_TINYOL_RequestRecalibration(void)
     g_tinyol.calibration_active = 1;
     g_tinyol.recording_requested = 0;
     g_tinyol.recording_active = 0;
+    g_tinyol.replay_ready = 0;
+    g_tinyol.replay_built = 0;
+    g_tinyol.run_in_progress = 0;
+    g_tinyol.training_done = 0;
+    g_tinyol.validation_in_progress = 0;
+    g_tinyol.validation_done = 0;
+    g_tinyol.result_ready = 0;
 
     SIL_APP_TOUCH_Exit();
     SIL_APP_TOUCH_Enter1();
@@ -353,12 +960,27 @@ void SIL_APP_TINYOL_SetSessionConfig(uint16_t target_label, uint16_t epochs,
     g_tinyol.confusable_count = confusable_count;
     g_tinyol.confusable_windows = confusable_windows;
     g_tinyol.anchor_windows = anchor_windows;
+    g_tinyol.replay_ready = 0U;
+    g_tinyol.replay_built = 0U;
+    g_tinyol.run_in_progress = 0U;
+    g_tinyol.training_done = 0U;
+    g_tinyol.validation_in_progress = 0U;
+    g_tinyol.validation_done = 0U;
+    g_tinyol.result_ready = 0U;
+    g_tinyol.validation_passed = 0U;
 }
 
 void SIL_APP_TINYOL_RequestRecording(void)
 {
     g_tinyol.recording_requested = 1;
     g_tinyol.recording_active = 0;
+    g_tinyol.replay_ready = 0;
+    g_tinyol.replay_built = 0;
+    g_tinyol.run_in_progress = 0;
+    g_tinyol.training_done = 0;
+    g_tinyol.validation_in_progress = 0;
+    g_tinyol.validation_done = 0;
+    g_tinyol.result_ready = 0;
     SIL_APP_TINYOL_ResetRecordingBuffers();
 }
 
@@ -374,11 +996,571 @@ void SIL_APP_TINYOL_StopRecording(void)
     g_tinyol.recording_active = 0;
 }
 
+fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
+{
+    uint16_t total_samples;
+    uint16_t default_samples;
+
+    if (g_tinyol.record_capture_count == 0U) {
+        return FSP_ERR_INVALID_STATE;
+    }
+
+    default_samples = (uint16_t)CNN_OUT_DIM;
+    total_samples = (uint16_t)(default_samples + g_tinyol.record_capture_count);
+    g_tinyol.replay_built = 1U;
+    g_tinyol.replay_ready = 1U;
+    g_tinyol.training_done = 0U;
+    g_tinyol.validation_done = 0U;
+    g_tinyol.result_ready = 0U;
+    g_tinyol.state = SIL_APP_TINYOL_STS_RUN_READY;
+    {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "TINYOL,REPLAY_BUILT,target=%u,default=%u,total=%u",
+                 (unsigned int)g_tinyol.record_capture_count,
+                 (unsigned int)default_samples,
+                 (unsigned int)total_samples);
+        SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+    }
+    return FSP_SUCCESS;
+}
+
+void SIL_APP_TINYOL_SetRunReady(void)
+{
+    g_tinyol.run_in_progress = 1U;
+    g_tinyol.training_done = 0U;
+    g_tinyol.validation_in_progress = 0U;
+    g_tinyol.validation_done = 0U;
+    g_tinyol.result_ready = 0U;
+    g_tinyol.state = SIL_APP_TINYOL_STS_RUN_START;
+}
+
+void SIL_APP_TINYOL_SetValidationReady(void)
+{
+    g_tinyol.validation_in_progress = 1U;
+    g_tinyol.run_in_progress = 0U;
+    g_tinyol.validation_done = 0U;
+    g_tinyol.result_ready = 0U;
+    g_tinyol.validation_passed = 0U;
+    g_tinyol.state = SIL_APP_TINYOL_STS_VAL_START;
+}
+
+void SIL_APP_TINYOL_SetResultReady(void)
+{
+    g_tinyol.validation_done = 1U;
+    g_tinyol.result_ready = 1U;
+    g_tinyol.run_in_progress = 0U;
+    g_tinyol.validation_in_progress = 0U;
+    g_tinyol.state = SIL_APP_TINYOL_STS_RESULT_READY;
+}
+
+fsp_err_t SIL_APP_TINYOL_RunTraining(void)
+{
+    cnn_detect_cache_t cache;
+    float train_loss = 0.0f;
+    uint32_t train_correct = 0U;
+    uint32_t train_total = 0U;
+    uint32_t epoch;
+
+    if (!g_tinyol.replay_ready) {
+        return FSP_ERR_INVALID_STATE;
+    }
+
+    SIL_APP_TINYOL_ClearGradients();
+    for (epoch = 0U; epoch < g_tinyol.epochs; epoch++) {
+        uint32_t label;
+        uint16_t idx;
+        uint16_t local_batch = 0U;
+        float epoch_loss = 0.0f;
+        uint32_t epoch_correct = 0U;
+        uint32_t epoch_total = 0U;
+
+        SIL_APP_TINYOL_ClearGradients();
+        local_batch = 0U;
+
+        for (label = 0U; label < CNN_OUT_DIM; label++) {
+            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+            float variance[CNN_AUX_VAR_DIM];
+            float mean[CNN_AUX_VAR_DIM];
+            if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault((uint16_t)label, waveform, variance, mean)) {
+                continue;
+            }
+            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                continue;
+            }
+
+            {
+                float prob = cache.proba[label];
+                if (prob < 1.0e-6f) {
+                    prob = 1.0e-6f;
+                }
+                epoch_loss += -logf(prob);
+                train_loss += -logf(prob);
+            }
+            epoch_total++;
+            train_total++;
+            {
+                uint16_t best = 0U;
+                for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
+                    if (cache.proba[idx] > cache.proba[best]) {
+                        best = idx;
+                    }
+                }
+                if (best == label) {
+                    epoch_correct++;
+                    train_correct++;
+                }
+            }
+            SIL_APP_TINYOL_AccumulateSampleGradients(&cache, (uint16_t)label);
+            local_batch++;
+            if ((local_batch >= g_tinyol.batch_size) || (label == (CNN_OUT_DIM - 1U))) {
+                SIL_APP_TINYOL_ApplyGradients(local_batch);
+                local_batch = 0U;
+            }
+        }
+
+        for (idx = 0U; idx < g_tinyol.record_capture_count; idx++) {
+            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+            float variance[CNN_AUX_VAR_DIM];
+            float mean[CNN_AUX_VAR_DIM];
+
+            if (!SIL_APP_TINYOL_BuildFeatureSampleFromTarget(idx, waveform, variance, mean)) {
+                continue;
+            }
+            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                continue;
+            }
+            {
+                float prob = cache.proba[g_tinyol.target_label];
+                if (prob < 1.0e-6f) {
+                    prob = 1.0e-6f;
+                }
+                epoch_loss += -logf(prob);
+                train_loss += -logf(prob);
+                epoch_total++;
+                train_total++;
+            }
+            {
+                uint16_t best = 0U;
+                uint16_t best_idx;
+                for (best_idx = 1U; best_idx < CNN_OUT_DIM; best_idx++) {
+                    if (cache.proba[best_idx] > cache.proba[best]) {
+                        best = best_idx;
+                    }
+                }
+                if (best == g_tinyol.target_label) {
+                    epoch_correct++;
+                    train_correct++;
+                }
+            }
+            SIL_APP_TINYOL_AccumulateSampleGradients(&cache, g_tinyol.target_label);
+            local_batch++;
+            if ((local_batch >= g_tinyol.batch_size) || (idx == (g_tinyol.record_capture_count - 1U))) {
+                SIL_APP_TINYOL_ApplyGradients(local_batch);
+                local_batch = 0U;
+            }
+        }
+
+        g_tinyol.last_train_loss = (epoch_total > 0U) ? (epoch_loss / (float)epoch_total) : 0.0f;
+        g_tinyol.last_train_acc = (epoch_total > 0U) ? ((float)epoch_correct / (float)epoch_total) : 0.0f;
+        {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "TINYOL,TRAIN_EPOCH,%u,loss=%.4f,acc=%.3f",
+                     (unsigned int)(epoch + 1U),
+                     (double)g_tinyol.last_train_loss,
+                     (double)g_tinyol.last_train_acc);
+            SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+            SIL_UART_DTC_FlushWriteBuffer(&gsil_uart_topc);
+        }
+    }
+
+    g_tinyol.training_done = 1U;
+    g_tinyol.run_in_progress = 0U;
+    g_tinyol.state = SIL_APP_TINYOL_STS_VAL_START;
+    {
+        float train_avg_loss = (train_total > 0U) ? (train_loss / (float)train_total) : train_loss;
+        char msg[96];
+        snprintf(msg, sizeof(msg), "TINYOL,TRAIN_DONE,loss=%.4f,acc=%.3f",
+                 (double)train_avg_loss,
+                 (double)((train_total > 0U) ? ((float)train_correct / (float)train_total) : 0.0f));
+        SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+        SIL_UART_DTC_FlushWriteBuffer(&gsil_uart_topc);
+    }
+    return FSP_SUCCESS;
+}
+
+fsp_err_t SIL_APP_TINYOL_RunValidation(void)
+{
+    cnn_detect_cache_t cache;
+    float val_loss = 0.0f;
+    uint32_t val_correct = 0U;
+    uint32_t val_total = 0U;
+    uint32_t target_correct = 0U;
+    uint32_t target_total = 0U;
+    uint16_t label;
+    uint16_t idx;
+
+    if (!g_tinyol.training_done) {
+        return FSP_ERR_INVALID_STATE;
+    }
+
+    for (label = 0U; label < CNN_OUT_DIM; label++) {
+        float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+        float variance[CNN_AUX_VAR_DIM];
+        float mean[CNN_AUX_VAR_DIM];
+        if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault(label, waveform, variance, mean)) {
+            continue;
+        }
+        if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+            continue;
+        }
+        {
+            float prob = cache.proba[label];
+            uint16_t best = 0U;
+            if (prob < 1.0e-6f) {
+                prob = 1.0e-6f;
+            }
+            val_loss += -logf(prob);
+            val_total++;
+            for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
+                if (cache.proba[idx] > cache.proba[best]) {
+                    best = idx;
+                }
+            }
+            if (best == label) {
+                val_correct++;
+            }
+            if (label == g_tinyol.target_label) {
+                target_total++;
+                if (best == label) {
+                    target_correct++;
+                }
+            }
+        }
+    }
+
+    g_tinyol.last_val_loss = (val_total > 0U) ? (val_loss / (float)val_total) : 0.0f;
+    g_tinyol.last_val_acc = (val_total > 0U) ? ((float)val_correct / (float)val_total) : 0.0f;
+    g_tinyol.last_target_recall = (target_total > 0U) ? ((float)target_correct / (float)target_total) : 0.0f;
+    g_tinyol.last_overall_acc = g_tinyol.last_val_acc;
+    g_tinyol.validation_passed = ((g_tinyol.last_target_recall >= TINYOL_VALIDATE_TARGET_RECALL_MIN) &&
+                                  (g_tinyol.last_overall_acc >= TINYOL_VALIDATE_OVERALL_ACC_MIN))
+                                     ? 1U
+                                     : 0U;
+    g_tinyol.validation_done = 1U;
+    g_tinyol.validation_in_progress = 0U;
+    g_tinyol.result_ready = 1U;
+    g_tinyol.state = SIL_APP_TINYOL_STS_RESULT_READY;
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "TINYOL,VAL_DONE,%s,loss=%.4f,acc=%.3f,target=%.3f",
+                 g_tinyol.validation_passed ? "PASS" : "REJECT",
+                 (double)g_tinyol.last_val_loss,
+                 (double)g_tinyol.last_val_acc,
+                 (double)g_tinyol.last_target_recall);
+        SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+        SIL_UART_DTC_FlushWriteBuffer(&gsil_uart_topc);
+    }
+    return FSP_SUCCESS;
+}
+
+fsp_err_t SIL_APP_TINYOL_LoadActiveHead(void)
+{
+    fsp_err_t err;
+
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    err = SIL_APP_TINYOL_ReadActiveHeadFromFlash();
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_LoadDefaultHead();
+        g_tinyol_head.active_head_exists = 0U;
+        g_tinyol_head.active_weight_enabled = 0U;
+        SIL_APP_TINYOL_UpdateHeadStatusFlags();
+    }
+    return err;
+}
+
+fsp_err_t SIL_APP_TINYOL_SelectHeadMode(uint8_t use_active_head)
+{
+    if (use_active_head != 0U) {
+        return SIL_APP_TINYOL_LoadActiveHead();
+    }
+
+    return SIL_APP_TINYOL_RestoreDefaultHead();
+}
+
+fsp_err_t SIL_APP_TINYOL_SaveActiveHead(void)
+{
+    fsp_err_t err;
+    uint8_t prev_exists;
+    uint8_t prev_enabled;
+
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    prev_exists = g_tinyol_head.active_head_exists;
+    prev_enabled = g_tinyol_head.active_weight_enabled;
+    err = SIL_APP_TINYOL_ApplyActiveHeadToFlash();
+    if (err == FSP_SUCCESS) {
+        g_tinyol_head.active_head_exists = 1U;
+        g_tinyol_head.active_weight_enabled = 1U;
+        SIL_APP_TINYOL_UpdateHeadStatusFlags();
+        return FSP_SUCCESS;
+    }
+    g_tinyol_head.active_head_exists = prev_exists;
+    g_tinyol_head.active_weight_enabled = prev_enabled;
+    SIL_APP_TINYOL_UpdateHeadStatusFlags();
+    return err;
+}
+
+fsp_err_t SIL_APP_TINYOL_EraseActiveHead(void)
+{
+    fsp_err_t err;
+    flash_info_t flash_info = {0};
+    uint32_t block_size;
+    uint32_t erase_blocks;
+
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    g_tinyol_flash_op_active = 1U;
+
+    /* Unlock flash HP registers */
+    (*(volatile uint32_t *)0x400C4800) |= (1U << 10);
+
+    err = g_flash0.p_api->open(g_flash0.p_ctrl, g_flash0.p_cfg);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(1U, err);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    err = g_flash0.p_api->infoGet(g_flash0.p_ctrl, &flash_info);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, err);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    if ((flash_info.code_flash.num_regions == 0U) || (flash_info.code_flash.p_block_array == NULL)) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, FSP_ERR_INVALID_DATA);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_INVALID_DATA;
+    }
+
+    block_size = flash_info.code_flash.p_block_array->block_size;
+    erase_blocks = (TINYOL_ACTIVE_HEAD_FLASH_SIZE + block_size - 1U) / block_size;
+    SIL_APP_TINYOL_SendFlashOpTrace("ERASE_START", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
+    SIL_APP_TINYOL_ResetFlashWaitFlags();
+    __disable_irq();
+    err = g_flash0.p_api->erase(g_flash0.p_ctrl, TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks);
+    __enable_irq();
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(3U, err);
+        g_flash0.p_api->close(g_flash0.p_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        SIL_APP_TINYOL_SendFlashOpTrace("ERASE_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
+        return err;
+    }
+    err = SIL_APP_TINYOL_WaitForFlashDone(&g_tinyol_flash_erase_done);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(5U, err);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        SIL_APP_TINYOL_SendFlashOpTrace("ERASE_WAIT_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
+        return err;
+    }
+    SIL_APP_TINYOL_SendFlashOpTrace("ERASE_OK", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
+
+    SIL_APP_TINYOL_LoadDefaultHead();
+    g_tinyol_head.active_head_exists = 0U;
+    g_tinyol_head.active_weight_enabled = 0U;
+    SIL_APP_TINYOL_UpdateHeadStatusFlags();
+    R_FLASH_HP_Close(&g_flash0_ctrl);
+    g_tinyol_flash_op_active = 0U;
+    SIL_APP_TINYOL_SetLastFlashOp(0U, FSP_SUCCESS);
+    SIL_APP_TINYOL_SendFlashOpTrace("ERASE_CLEARED", TINYOL_ACTIVE_HEAD_FLASH_ADDR, block_size, 0U);
+    return FSP_SUCCESS;
+}
+
+fsp_err_t SIL_APP_TINYOL_RestoreDefaultHead(void)
+{
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    SIL_APP_TINYOL_LoadDefaultHead();
+    g_tinyol_head.active_head_exists = 0U;
+    g_tinyol_head.active_weight_enabled = 0U;
+    SIL_APP_TINYOL_UpdateHeadStatusFlags();
+    return FSP_SUCCESS;
+}
+
+fsp_err_t SIL_APP_TINYOL_RunFlashBlockTest(void)
+{
+    flash_info_t flash_info = {0};
+    uint32_t block_size;
+    uint32_t write_block_size;
+    uint32_t erase_blocks;
+    uint32_t offset;
+    uint32_t test_addr;
+    fsp_err_t err;
+    uint32_t checksum = 0U;
+    uint32_t limit_addr;
+    uint32_t write_len;
+    uint32_t padded_len;
+    uint8_t chunk[TINYOL_HEAD_WRITE_CHUNK_MAX] = {0xFF};
+
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    g_tinyol_flash_op_active = 1U;
+
+    (*(uint32_t *)0x400C4800) |= (1U << 10);
+    err = R_FLASH_HP_Open(&g_flash0_ctrl, &g_flash0_cfg);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(1U, err);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    err = g_flash0.p_api->infoGet(g_flash0.p_ctrl, &flash_info);
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, err);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    if ((flash_info.code_flash.num_regions == 0U) || (flash_info.code_flash.p_block_array == NULL)) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, FSP_ERR_INVALID_DATA);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_INVALID_DATA;
+    }
+
+    block_size = flash_info.code_flash.p_block_array->block_size;
+    write_block_size = flash_info.code_flash.p_block_array->block_size_write;
+    if ((block_size == 0U) || (block_size > TINYOL_FLASHTEST_BUFFER_MAX) ||
+        (write_block_size == 0U) || (write_block_size > TINYOL_HEAD_WRITE_CHUNK_MAX) ||
+        ((block_size % write_block_size) != 0U) ||
+        (block_size > (TINYOL_ACTIVE_HEAD_FLASH_SIZE / 2U))) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, FSP_ERR_INVALID_DATA);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_INVALID_DATA;
+    }
+
+    test_addr = TINYOL_ACTIVE_HEAD_FLASH_ADDR;
+    limit_addr = TINYOL_ACTIVE_HEAD_FLASH_ADDR + TINYOL_ACTIVE_HEAD_FLASH_SIZE;
+    if ((test_addr < TINYOL_ACTIVE_HEAD_FLASH_ADDR) || ((test_addr + block_size) > limit_addr)) {
+        SIL_APP_TINYOL_SetLastFlashOp(2U, FSP_ERR_INVALID_ADDRESS);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_INVALID_ADDRESS;
+    }
+
+    g_tinyol_last_flash_test_addr = test_addr;
+    SIL_APP_TINYOL_FillFlashTestString(g_tinyol_flashtest_write_buf, block_size, test_addr);
+    padded_len = (uint32_t)strlen((const char *)g_tinyol_flashtest_write_buf) + 1U;
+    if (padded_len > block_size) {
+        padded_len = block_size;
+    }
+
+    erase_blocks = 12U;
+    SIL_APP_TINYOL_SendFlashTestTrace("ERASE_START", test_addr, block_size * erase_blocks, FSP_SUCCESS);
+    __disable_irq();
+    err = R_FLASH_HP_Erase(&g_flash0_ctrl, test_addr, erase_blocks);
+    __enable_irq();
+    if (err != FSP_SUCCESS) {
+        SIL_APP_TINYOL_SetLastFlashOp(3U, err);
+        SIL_APP_TINYOL_SendFlashTestTrace("ERASE_FAIL", test_addr, block_size, err);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return err;
+    }
+    SIL_APP_TINYOL_SendFlashTestTrace("ERASE_DONE", test_addr, block_size, FSP_SUCCESS);
+
+    for (offset = 0; offset < block_size; offset += write_block_size) {
+        memset(chunk, 0xFF, sizeof(chunk));
+        write_len = write_block_size;
+        if (offset < padded_len) {
+            write_len = padded_len - offset;
+            if (write_len > write_block_size) {
+                write_len = write_block_size;
+            }
+            memcpy(chunk, &g_tinyol_flashtest_write_buf[offset], write_len);
+        }
+        SIL_APP_TINYOL_SendFlashTestTrace("WRITE_START", test_addr + offset, write_block_size, FSP_SUCCESS);
+        __disable_irq();
+        err = R_FLASH_HP_Write(&g_flash0_ctrl,
+                               (uint32_t)chunk,
+                               test_addr + offset,
+                               write_block_size);
+        __enable_irq();
+        if (err != FSP_SUCCESS) {
+            SIL_APP_TINYOL_SetLastFlashOp(4U, err);
+            SIL_APP_TINYOL_SendFlashTestTrace("WRITE_FAIL", test_addr + offset, write_block_size, err);
+            R_FLASH_HP_Close(&g_flash0_ctrl);
+            g_tinyol_flash_op_active = 0U;
+            return err;
+        }
+        SIL_APP_TINYOL_SendFlashTestTrace("WRITE_DONE", test_addr + offset, write_block_size, FSP_SUCCESS);
+    }
+
+    if (memcmp((const void *)(uintptr_t)test_addr,
+               g_tinyol_flashtest_write_buf,
+               block_size) != 0) {
+        SIL_APP_TINYOL_SetLastFlashOp(7U, FSP_ERR_ASSERTION);
+        R_FLASH_HP_Close(&g_flash0_ctrl);
+        g_tinyol_flash_op_active = 0U;
+        return FSP_ERR_ASSERTION;
+    }
+
+    for (offset = 0; offset < block_size; offset++) {
+        checksum ^= g_tinyol_flashtest_write_buf[offset];
+        checksum = (checksum << 1) | (checksum >> 31);
+    }
+    R_FLASH_HP_Close(&g_flash0_ctrl);
+    g_tinyol_flash_op_active = 0U;
+    g_tinyol_last_flash_test_checksum = checksum;
+    SIL_APP_TINYOL_SetLastFlashOp(0U, FSP_SUCCESS);
+    SIL_APP_TINYOL_SendFlashTestTrace("COMPLETE", test_addr, block_size, FSP_SUCCESS);
+    return FSP_SUCCESS;
+}
+
 uint8_t SIL_APP_TINYOL_IsCalibrationActive(void) { return g_tinyol.calibration_active; }
 uint8_t SIL_APP_TINYOL_IsRecordingActive(void) { return g_tinyol.recording_active; }
+uint8_t SIL_APP_TINYOL_IsReplayReady(void) { return g_tinyol.replay_ready; }
+uint8_t SIL_APP_TINYOL_IsReplayBuilt(void) { return g_tinyol.replay_built; }
+uint8_t SIL_APP_TINYOL_IsRunInProgress(void) { return g_tinyol.run_in_progress; }
+uint8_t SIL_APP_TINYOL_IsTrainingDone(void) { return g_tinyol.training_done; }
+uint8_t SIL_APP_TINYOL_IsValidationInProgress(void) { return g_tinyol.validation_in_progress; }
+uint8_t SIL_APP_TINYOL_IsValidationDone(void) { return g_tinyol.validation_done; }
+uint8_t SIL_APP_TINYOL_IsResultReady(void) { return g_tinyol.result_ready; }
+uint8_t SIL_APP_TINYOL_IsValidationPassed(void) { return g_tinyol.validation_passed; }
+uint8_t SIL_APP_TINYOL_HasActiveHead(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head_exists; }
+uint8_t SIL_APP_TINYOL_IsActiveHeadEnabled(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head_enabled; }
+uint32_t SIL_APP_TINYOL_GetActiveWeightSlot(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.active_weight_slot; }
+uint32_t SIL_APP_TINYOL_GetActiveHeadVersion(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.head_version; }
+uint32_t SIL_APP_TINYOL_GetActiveHeadChecksum(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.checksum; }
+uint32_t SIL_APP_TINYOL_GetActiveHeadBytes(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.weight_bytes; }
+uint32_t SIL_APP_TINYOL_GetActiveHeadMagic(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.magic; }
+void SIL_APP_TINYOL_CopyActiveHeadDump(uint8_t *dst, uint32_t len)
+{
+    uint32_t copy_len;
+
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    if ((dst == NULL) || (len == 0U)) {
+        return;
+    }
+    copy_len = (len < (uint32_t)sizeof(g_tinyol_head)) ? len : (uint32_t)sizeof(g_tinyol_head);
+    memcpy(dst, &g_tinyol_head, copy_len);
+}
+uint8_t SIL_APP_TINYOL_GetLastFlashOpStage(void) { return g_tinyol_last_flash_op_stage; }
+uint32_t SIL_APP_TINYOL_GetLastFlashOpError(void) { return g_tinyol_last_flash_op_error; }
+uint32_t SIL_APP_TINYOL_GetLastFlashTestChecksum(void) { return g_tinyol_last_flash_test_checksum; }
+uint32_t SIL_APP_TINYOL_GetLastFlashTestAddress(void) { return g_tinyol_last_flash_test_addr; }
+float SIL_APP_TINYOL_GetLastTrainLoss(void) { return g_tinyol.last_train_loss; }
+float SIL_APP_TINYOL_GetLastTrainAcc(void) { return g_tinyol.last_train_acc; }
+float SIL_APP_TINYOL_GetLastValLoss(void) { return g_tinyol.last_val_loss; }
+float SIL_APP_TINYOL_GetLastValAcc(void) { return g_tinyol.last_val_acc; }
+float SIL_APP_TINYOL_GetLastTargetRecall(void) { return g_tinyol.last_target_recall; }
+float SIL_APP_TINYOL_GetLastOverallAcc(void) { return g_tinyol.last_overall_acc; }
 
 uint16_t SIL_APP_TINYOL_GetTargetLabel(void) { return g_tinyol.target_label; }
 uint16_t SIL_APP_TINYOL_GetClassCount(void) { return g_tinyol.class_count; }
 uint16_t SIL_APP_TINYOL_GetEpochs(void) { return g_tinyol.epochs; }
 uint8_t SIL_APP_TINYOL_GetHandshakeSent(void) { return g_tinyol.handshake_sent; }
 uint8_t SIL_APP_TINYOL_GetRecalibrationRequested(void) { return g_tinyol.recalibration_requested; }
+const float *SIL_APP_TINYOL_GetDenseF2Weights(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_f2_w; }
+const float *SIL_APP_TINYOL_GetDenseF2Bias(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_f2_b; }
+const float *SIL_APP_TINYOL_GetDenseOutWeights(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_out_w; }
+const float *SIL_APP_TINYOL_GetDenseOutBias(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_out_b; }
