@@ -699,9 +699,7 @@ fsp_err_t SIL_APP_TINYOL_Enter2(void)
     }
     g_tinyol.state = SIL_APP_TINYOL_STS_READY;
 
-    /* Automatically trigger flash test and save active head on startup */
-    SIL_APP_TINYOL_RunFlashBlockTest();
-    SIL_APP_TINYOL_SaveActiveHead();
+
 
     return FSP_SUCCESS;
 }
