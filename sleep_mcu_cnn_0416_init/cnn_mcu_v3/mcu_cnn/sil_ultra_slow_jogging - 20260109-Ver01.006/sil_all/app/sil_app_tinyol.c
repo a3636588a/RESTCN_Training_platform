@@ -75,6 +75,18 @@ static uint8_t g_tinyol_flashtest_write_buf[TINYOL_FLASHTEST_BUFFER_MAX];
 #define TINYOL_NOTIFY_HOLD_TICKS 250U
 #define TINYOL_CALIB_HOLD_TICKS 500U
 
+static uint32_t SIL_APP_TINYOL_GetBlockSize(uint32_t address)
+{
+    if (address < 0x00010000U)
+    {
+        return 8192U; /* Region 0: 8KB */
+    }
+    else
+    {
+        return 32768U; /* Region 1: 32KB */
+    }
+}
+
 static void SIL_APP_TINYOL_EnsureHeadInitialized(void);
 static void SIL_APP_TINYOL_LoadDefaultHead(void);
 static uint32_t SIL_APP_TINYOL_HeadChecksum(const sil_app_tinyol_head_flash_s *head);
@@ -539,7 +551,7 @@ static fsp_err_t SIL_APP_TINYOL_ApplyActiveHeadToFlash(void)
         return FSP_ERR_INVALID_DATA;
     }
 
-    block_size = flash_info.code_flash.p_block_array->block_size;
+    block_size = SIL_APP_TINYOL_GetBlockSize(TINYOL_ACTIVE_HEAD_FLASH_ADDR);
     write_block_size = flash_info.code_flash.p_block_array->block_size_write;
     if ((write_block_size == 0U) || (write_block_size > TINYOL_HEAD_WRITE_CHUNK_MAX)) {
         g_flash0.p_api->close(g_flash0.p_ctrl);
@@ -1342,7 +1354,7 @@ fsp_err_t SIL_APP_TINYOL_EraseActiveHead(void)
         return FSP_ERR_INVALID_DATA;
     }
 
-    block_size = flash_info.code_flash.p_block_array->block_size;
+    block_size = SIL_APP_TINYOL_GetBlockSize(TINYOL_ACTIVE_HEAD_FLASH_ADDR);
     erase_blocks = (TINYOL_ACTIVE_HEAD_FLASH_SIZE + block_size - 1U) / block_size;
     SIL_APP_TINYOL_SendFlashOpTrace("ERASE_START", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
     SIL_APP_TINYOL_ResetFlashWaitFlags();
@@ -1426,7 +1438,7 @@ fsp_err_t SIL_APP_TINYOL_RunFlashBlockTest(void)
         return FSP_ERR_INVALID_DATA;
     }
 
-    block_size = flash_info.code_flash.p_block_array->block_size;
+    block_size = SIL_APP_TINYOL_GetBlockSize(TINYOL_ACTIVE_HEAD_FLASH_ADDR);
     write_block_size = flash_info.code_flash.p_block_array->block_size_write;
     if ((block_size == 0U) || (block_size > TINYOL_FLASHTEST_BUFFER_MAX) ||
         (write_block_size == 0U) || (write_block_size > TINYOL_HEAD_WRITE_CHUNK_MAX) ||
@@ -1454,7 +1466,7 @@ fsp_err_t SIL_APP_TINYOL_RunFlashBlockTest(void)
         padded_len = block_size;
     }
 
-    erase_blocks = 12U;
+    erase_blocks = (TINYOL_ACTIVE_HEAD_FLASH_SIZE + block_size - 1U) / block_size;
     SIL_APP_TINYOL_SendFlashTestTrace("ERASE_START", test_addr, block_size * erase_blocks, FSP_SUCCESS);
     __disable_irq();
     err = R_FLASH_HP_Erase(&g_flash0_ctrl, test_addr, erase_blocks);
