@@ -571,14 +571,7 @@ static fsp_err_t SIL_APP_TINYOL_ApplyActiveHeadToFlash(void)
         SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
         return err;
     }
-    err = SIL_APP_TINYOL_WaitForFlashDone(&g_tinyol_flash_erase_done);
-    if (err != FSP_SUCCESS) {
-        SIL_APP_TINYOL_SetLastFlashOp(5U, err);
-        g_flash0.p_api->close(g_flash0.p_ctrl);
-        g_tinyol_flash_op_active = 0U;
-        SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_WAIT_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
-        return err;
-    }
+    /* Code Flash erase is synchronous, no need to wait for callback */
     SIL_APP_TINYOL_SendFlashOpTrace("APPLY_ERASE_OK", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
 
     src = (const uint8_t *)&g_tinyol_head;
@@ -607,14 +600,7 @@ static fsp_err_t SIL_APP_TINYOL_ApplyActiveHeadToFlash(void)
             SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_FAIL", write_addr, write_block_size, (uint32_t)err);
             return err;
         }
-        err = SIL_APP_TINYOL_WaitForFlashDone(&g_tinyol_flash_write_done);
-        if (err != FSP_SUCCESS) {
-            SIL_APP_TINYOL_SetLastFlashOp(6U, err);
-            g_flash0.p_api->close(g_flash0.p_ctrl);
-            g_tinyol_flash_op_active = 0U;
-            SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_WAIT_FAIL", write_addr, write_block_size, (uint32_t)err);
-            return err;
-        }
+        /* Code Flash write is synchronous, no need to wait for callback */
         if (offset == 0U) {
             SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_OK", write_addr, write_block_size, (uint32_t)chunk[0]);
         }
@@ -1368,14 +1354,7 @@ fsp_err_t SIL_APP_TINYOL_EraseActiveHead(void)
         SIL_APP_TINYOL_SendFlashOpTrace("ERASE_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
         return err;
     }
-    err = SIL_APP_TINYOL_WaitForFlashDone(&g_tinyol_flash_erase_done);
-    if (err != FSP_SUCCESS) {
-        SIL_APP_TINYOL_SetLastFlashOp(5U, err);
-        R_FLASH_HP_Close(&g_flash0_ctrl);
-        g_tinyol_flash_op_active = 0U;
-        SIL_APP_TINYOL_SendFlashOpTrace("ERASE_WAIT_FAIL", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, (uint32_t)err);
-        return err;
-    }
+    /* Code Flash erase is synchronous, no need to wait for callback */
     SIL_APP_TINYOL_SendFlashOpTrace("ERASE_OK", TINYOL_ACTIVE_HEAD_FLASH_ADDR, erase_blocks, 0U);
 
     SIL_APP_TINYOL_LoadDefaultHead();
