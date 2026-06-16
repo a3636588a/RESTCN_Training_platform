@@ -1,4 +1,4 @@
-﻿# RESTCN - UI_V6 訓練/偵測平台
+# RESTCN - UI_V6 訓練/偵測平台
 
 本專案提供 `ui_v6.py` 圖形介面，整合資料掃描、模型訓練、即時偵測與（後續）MCU codegen 流程。
 
@@ -241,24 +241,49 @@ Replay 策略：
 - 若沒有混淆類別，也允許走 `anchor-only replay`
 - `replay data dir` 的 CSV 若檔名是 `0-12.csv`、`3-7.csv` 這種 prefix 形式，系統會依 prefix 抽樣
 
+
+目前規格：
+- 只更新 head 最後兩層：`Dense(64) + Dense(num_classes)`
+- 類別來源以 `meta.pkl` 為主
+- `Train Log` 用來推薦 `confusable classes`
+- `window_len`、`channels`、`feature_cols` 依目前載入的 `meta` 固定
+- 若 `Train Log` 沒提供 prefix mapping，會改用 `meta + replay data dir` 自動推 `prefix`
+
+`TinyOL` 目前工作流：
+1. 載入 `Model / Meta / Train Log / Replay data dir / Export dir`
+2. 選 `Target Class`
+3. `Auto Recommend Confusables`
+4. `Create Session` → `Lock Session`
+5. 用 `UART` 錄製 target raw data
+6. 依規則提取 target window
+7. `Build Replay`
+8. `Run OL`
+9. `Run Validation`
+10. `Export MCU Files`
+
+UART 錄製與 window 提取：
+- 目前沿用 Detect 相同 UART 解析格式（如 `SILMOVBASE`、`SILHOLDAVG`、`SILROW`）
+- 每次預設錄滿 `150` rows
+- 再依 `start_offset=30` 取出 `window_len` 長度的 target window
+- 例如 `window_len=35` 時，會取 `rows[30:65]`
+
+Replay 策略：
+- 若 log 有直接混淆類別，就優先抽 `confusable replay`
+- 若沒有混淆類別，也允許走 `anchor-only replay`
+- `replay data dir` 的 CSV 若檔名是 `0-12.csv`、`3-7.csv` 這種 prefix 形式，系統會依 prefix 抽樣
+
 目前 `TinyOL` 會自動忽略多餘通道，只使用 `meta.channels` 指定的通道：
 - `CSV / UART` 多給 channel 可以
 - 缺少 `meta.channels` 需要的欄位才會報錯
 
 ### TinyOL MCU 進度
-- 已完成 `step1 ~ step5`
-  - `step1`：切入 TinyOL mode
-  - `step2`：讀取 TinyOL info / label table / active head 狀態
-  - `step3`：重新校正 base / hold
-  - `step4`：送出 session config（target label、epochs）
-  - `step5`：錄製 target raw data，單筆 150 samples，最多 3 筆，存於 MCU RAM
-- 後續 `step6 ~ step8` 會接 replay、OL training、apply / rollback / exit
+- 已完成 `step1 ~ step8` 的交握、校準、Replay、OL 微調訓練、驗證、套用與回滾之完整流程驗證。
+  - Active Head 以 Code Flash 的獨立區塊保存，Default Head 仍以 `cnnlib` 作為 Fallback 預設權重。
+  - 已解決快閃記憶體擦除/寫入失敗與手動清除命令無回應的關鍵 Bug。
 
 訓練與 terminal 輸出：
 - 可在 UI 設定 `Batch Size`、`Epochs`、`Learning Rate`
 - terminal 會輸出：
-  - dataset/replay 組成
-  - trainable dense layers
   - train mix（target/replay/oversample）
   - train config（epochs/batch/lr）
   - 每一輪 `loss / acc / val_loss / val_acc`
@@ -329,3 +354,38 @@ MCU 匯出：
 補充：
 - `ui_v6.spec` 已設定 EXE 名稱為 `ML_Station`
 - 主視窗標題也已改為 `ML_Station`
+
+---
+
+## 10. TinyOL MCU 實體快閃記憶體磁區分割 (Flash Partition Map)
+
+晶片 (R7FA6M5BF3CFP) 擁有實體 **1MB (1024KB)** 的 Code Flash (記憶體範圍 `0x00000000` 到 `0x00100000`)。
+為了同時支援 Bootloader、雙 Slot 韌體升級 (OTA) 以及獨立的 TinyOL 訓練權重儲存，目前磁區劃分與分割規劃如下：
+
+| 快閃記憶體名稱 / 作用區段 | 起始位址 | 大小 (Size) | 結束位址 | 區塊大小特性 (Block Size) | 安全屬性 (Security) |
+| :--- | :--- | :---: | :--- | :--- | :--- |
+| **FLASH_CM33_B** (Bootloader 程式區) | `0x00000000` | `0x8000` (32KB) | `0x00008000` | Region 0: 8KB | Secure |
+| **__BL_0_P_H** (Bootloader 狀態 Header) | `0x00008000` | `0x100` (256B) | `0x00008100` | Region 0: 8KB | Secure |
+| **FLASH_CM33_S** (活動應用程式區 / Primary Slot) | `0x00008100` | `0x6FF00` (447.75KB) | `0x00078000` | Region 0: 8KB (前半) / Region 1: 32KB (後半) | Secure |
+| **__BL_0_S_H** (升級備用區 Header) | `0x00078000` | `0x100` (256B) | `0x00078100` | Region 1: 32KB | Secure |
+| **__BL_0_S_I** (升級備用區 / Secondary Slot) | `0x00078100` | `0x6FF00` (447.75KB) | `0x000E8000` | Region 1: 32KB | Secure |
+| **FLASH_CM33_C** (TinyOL Active Head 儲存區) | `0x000E8000` | `0x18000` (96KB) | `0x00100000` | Region 1: **32KB** (共 3 個實體 Block) | Non-secure Callable |
+
+---
+
+## 11. TinyOL MCU 快閃記憶體與指令解析修正記錄
+
+為使 TinyOL 快閃記憶體寫入順暢執行，本次進行了以下關鍵 Bug 修正：
+
+### 11.1 修正 Active Head 快閃記憶體擦除失敗 (FSP_ERR_ERASE_FAILED, 25)
+* **問題**：TinyOL Head 的快閃記憶體儲存起始位址為 `0x000E8000`，此位址物理上屬於 **Region 1**，其 Block 大小為 **32KB** (而非 Region 0 的 8KB)。先前程式碼誤以 8KB 作為 Block 大小，使得擦除整個 96KB 空間時計算出了 `12` 個 Block，並呼叫 FSP Erase 擦除 12 個區塊。這使 Driver 嘗試擦除 `12 * 32KB = 384KB` 的範圍，擦除位址直達 `0x00148000`，越界超出了晶片 1MB 實體邊界，進而引發硬體非法位址錯誤，擦除操作失敗。
+* **修正**：在 `sil_app_tinyol.c` 中新增動態 Block 大小查詢 `SIL_APP_TINYOL_GetBlockSize`，依據快閃記憶體位址動態獲取 Region 1 的 32KB 大小。修正後 96KB 空間的擦除區塊數量精準修正為 **3**，成功解決了擦除越界問題。
+
+### 11.2 修正快閃記憶體超時等待錯誤 (FSP_ERR_ABORTED, 18)
+* **問題**：對於不支援 BGO 的 Code Flash 操作，在中斷被關閉 (`__disable_irq()`) 且 CPU 暫停運作的同步阻塞模式下，異步中斷 callback 永遠不會被觸發，因此 `WaitForFlashDone` 必然會超時等待失敗並傳回 18 錯誤。
+* **修正**：在 `EraseActiveHead` 與 `ApplyActiveHeadToFlash` 中移除了多餘的 `WaitForFlashDone` 迴圈等待，API 呼叫完畢後直接判定結果，解決了同步擦寫時的超時等待問題。
+
+### 11.3 修正手動清除指令 `$SILOLERASE` 無回應問題
+* **問題**：`SIL_ATCMDS_ProcessAtcmds` 中缺少了對 `SILOLERASE` 的字串匹配檢查，使得發送 `$SILOLERASE*15` 時，微控制器將其判定為未知指令 `UNKNOWN` 直接無視。
+* **修正**：在 `sil_atcmds.c` 的 Process 流程中補上了與 `$SILOLAPPLY` 平級的 `SILOLERASE` 匹配轉發邏輯，微控制器現已能正確響應清除指令並回傳 `ERASE_OK` 封包。
+
