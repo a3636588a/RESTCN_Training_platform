@@ -737,6 +737,17 @@ sil_atcmds_cmds_in_e SIL_ATCMDS_ProcessAtcmds(char *d, char **nD) {
     goto EXIT;
   }
 
+  // SILOLERASE
+  ll = strlen(SILCNTS_ATCMDS_SILOLERASE);
+  result = strncmp(SILCNTS_ATCMDS_SILOLERASE, (const char *)p, (size_t)ll);
+  if (result == 0) {
+    *nD = d + ll;
+    p[len - 5] = ',';
+    p[len - 4] = 0;
+    cmd = ATCMDS_CMDS_IN_SILOLERASE_E;
+    goto EXIT;
+  }
+
   // SILOLROLLBACK
   ll = strlen(SILCNTS_ATCMDS_SILOLROLLBACK);
   result = strncmp(SILCNTS_ATCMDS_SILOLROLLBACK, (const char *)p, (size_t)ll);
