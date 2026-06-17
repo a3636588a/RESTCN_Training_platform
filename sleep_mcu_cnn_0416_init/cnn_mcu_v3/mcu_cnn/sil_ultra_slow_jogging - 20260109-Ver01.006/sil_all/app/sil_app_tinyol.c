@@ -1196,14 +1196,16 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
             }
         }
     }
-    if (g_tinyol_head.saved_record_label == g_tinyol.target_label && g_tinyol_head_exists) {
+    if (g_tinyol_head.saved_record_label != 0xFFFFU && g_tinyol_head_exists) {
         if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
-            g_train_samples[g_train_sample_count].is_target = 2; // Flash target
-            g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol.target_label;
+            g_train_samples[g_train_sample_count].is_target = 2; // Flash golden gesture
+            g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol_head.saved_record_label;
             g_train_samples[g_train_sample_count].sample_idx = 0;
             g_train_indices[g_train_sample_count] = g_train_sample_count;
             g_train_sample_count++;
-            target_count++;
+            if (g_tinyol_head.saved_record_label == g_tinyol.target_label) {
+                target_count++;
+            }
         }
     }
 
@@ -1465,13 +1467,14 @@ fsp_err_t SIL_APP_TINYOL_RunValidation(void)
             }
         }
     }
-    if (g_tinyol_head.saved_record_label == g_tinyol.target_label && g_tinyol_head_exists) {
+    if (g_tinyol_head.saved_record_label != 0xFFFFU && g_tinyol_head_exists) {
         float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
         float variance[CNN_AUX_VAR_DIM];
         float mean[CNN_AUX_VAR_DIM];
         if (SIL_APP_TINYOL_BuildFeatureSampleFromSaved(waveform, variance, mean)) {
             if (cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
-                float prob = cache.proba[g_tinyol.target_label];
+                uint32_t true_label = g_tinyol_head.saved_record_label;
+                float prob = cache.proba[true_label];
                 uint16_t best = 0U;
                 if (prob < 1.0e-6f) {
                     prob = 1.0e-6f;
@@ -1483,11 +1486,15 @@ fsp_err_t SIL_APP_TINYOL_RunValidation(void)
                         best = idx_c;
                     }
                 }
-                if (best == g_tinyol.target_label) {
+                if (best == true_label) {
                     val_correct++;
-                    target_correct++;
                 }
-                target_total++;
+                if (true_label == g_tinyol.target_label) {
+                    target_total++;
+                    if (best == true_label) {
+                        target_correct++;
+                    }
+                }
             }
         }
     }
