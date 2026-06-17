@@ -389,3 +389,26 @@ MCU 匯出：
 * **問題**：`SIL_ATCMDS_ProcessAtcmds` 中缺少了對 `SILOLERASE` 的字串匹配檢查，使得發送 `$SILOLERASE*15` 時，微控制器將其判定為未知指令 `UNKNOWN` 直接無視。
 * **修正**：在 `sil_atcmds.c` 的 Process 流程中補上了與 `$SILOLAPPLY` 平級的 `SILOLERASE` 匹配轉發邏輯，微控制器現已能正確響應清除指令並回傳 `ERASE_OK` 封包。
 
+---
+
+## 12. TinyOL 平台與板端核心功能重構與 Bug 修正記錄
+
+本次更新涵蓋了 PC 端 `ui_v6` 介面、`gen_cnn_lib` 程式碼生成工具，以及板端 `sil_app_tinyol.c` 核心訓練流程的深度優化，並解決了導致板端無法訓練的重大初始化 Bug：
+
+### 12.1 PC 平台端優化 (ui_v6.py & gen_cnn_lib.py)
+* **新增 TinyOL 專用資料夾欄位**：在 `ui_v6.py` 的 Gen Code (CNN) 頁面新增了 TinyOL 專用路徑設定，防止系統抓錯預設訓練資料夾。
+* **最佳資料樣本篩選**：修改 `gen_cnn_lib.py`，使 TinyOL default data 導出時，自動為每個 label 挑選 1 個最佳的 CSV 檔，且只截取其尾段的穩定資料。
+* **無重疊滑動視窗**：將原先步進 (step) 式的資料切窗邏輯調整為無重疊切窗，提高資料特徵代表性。
+* **基準格式輸出整合**：將 base 與 hold 改為共用一組格式輸出，並於 `gen_cnn_lib.py` 自動生成 `tinyol_default_windows.h/.c` 及對應的 manifest。
+* **修正 C 語言 1D 陣列初始化雙花括號 Bug (重大 Bug 修正)**：
+  * **問題**：`gen_cnn_lib.py` 在輸出 `tinyol_default_cls_X_base` 和 `_hold` 陣列（長度為 5 的 1D 陣列）時，錯誤地使用了雙重花括號 `{ { v0, v1, v2, v3, v4 } }`。這在 C 語言中會被編譯器解讀為僅初始化第一個元素 `array[0]`，而使元素 1 至 4 被默認賦值為 `0`。這造成歸一化後的特徵值暴增至數萬倍（正常應在 `[-1.0, 1.0]`），引發 CNN 內部權重與輸出溢出（NaN/Inf），使模型預測概率始終為 `0`，Loss 鎖死在 `13.8155` 且 Acc 鎖死在隨機的 `0.111`（36分之4）。
+  * **修正**：在 `gen_cnn_lib.py` 中移除內層花括號，生成正確的單花括號 1D 陣列格式，並對已生成的 `tinyol_default_windows.c` 進行批次修復，成功恢復板端特徵計算的精準度。
+
+### 12.2 MCU 板端核心優化 (sil_app_tinyol.c)
+* **兼容新版 Default Data**：重構板端讀取 default data 的流程，使其完全相容於新的 `tinyol_default_windows` 格式。
+* **支援動態輸出維度**：將 replay、training 與 validation 流程全面改由動態的 `CNN_OUT_DIM` 控制，而非寫死常數。
+* **權重更新範圍鎖定**：精確將 TinyOL 板端權重微調（OL）更新範圍鎖定在後面的 Bottleneck F2 與 Output 兩層（Dense_F2 + Dense_Out）。
+* **快閃記憶體流程閉環**：完善並對齊了 active head 的寫入套用 (apply)、回滾 (rollback) 以及加載 active head (read active head) 的全套控制流程。
+
+### 12.3 TinyOL UI 操作流程優化 (Step 化)
+* **自動流程對齊**：重整了 TinyOL 頁面的 UI 設計，將「校正、讀取資訊、手勢錄製、Replay 構建、訓練/驗證、快閃記憶體寫入/回滾」等操作整理成 Step 化的引導流程，並與板端的 board-like 即時互動狀態機完全對齊。

@@ -217,10 +217,10 @@
     <memory Pname="CM33" name="RAM_CM33_S" offset="0x8000" parent="RAM" security="s" size="0x78000"/>
     <memory Pname="CM33" name="RAM_CM33_C" offset="0x80000" parent="RAM" security="c" size="0x0"/>
     <memory Pname="CM33" name="__BL_0_P_H" offset="0x8000" parent="FLASH" security="s" size="0x100" userDefined="true"/>
-    <memory Pname="CM33" name="FLASH_CM33_S" offset="0x8100" parent="FLASH" security="s" size="0x77F00"/>
-    <memory Pname="CM33" name="__BL_0_S_H" offset="0x88000" parent="FLASH" security="s" size="0x100" userDefined="true"/>
-    <memory Pname="CM33" name="__BL_0_S_I" offset="0x88100" parent="FLASH" security="s" size="0x77F00" userDefined="true"/>
-    <memory Pname="CM33" name="FLASH_CM33_C" offset="0x100000" parent="FLASH" security="c" size="0x0"/>
+    <memory Pname="CM33" name="FLASH_CM33_S" offset="0x8100" parent="FLASH" security="s" size="0x6FF00"/>
+    <memory Pname="CM33" name="__BL_0_S_H" offset="0x78000" parent="FLASH" security="s" size="0x100" userDefined="true"/>
+    <memory Pname="CM33" name="__BL_0_S_I" offset="0x78100" parent="FLASH" security="s" size="0x6FF00" userDefined="true"/>
+    <memory Pname="CM33" name="FLASH_CM33_C" offset="0xE8000" parent="FLASH" security="c" size="0x18000"/>
     <memory Pname="CM33" name="DATA_FLASH_CM33_S" offset="0x0" parent="DATA_FLASH" security="s" size="0x0"/>
     <memory Pname="CM33" name="QSPI_FLASH_CM33_S" offset="0x0" parent="QSPI_FLASH" security="s" size="0x0"/>
     <memory Pname="CM33" name="OSPI0_CS0_CM33_S" offset="0x0" parent="OSPI0_CS0" security="s" size="0x0"/>

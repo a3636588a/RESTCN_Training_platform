@@ -49,6 +49,15 @@ class QLogRedirector(QObject):
         pass
 
 
+def build_nmea_checksum(sentence: str) -> str:
+    crc = 0
+    for ch in sentence:
+        if ch in ("$", "*"):
+            continue
+        crc ^= ord(ch)
+    return f"{crc:02X}"
+
+
 # =========================
 # Dynamic Matcher
 # =========================
@@ -1416,13 +1425,17 @@ class GenCnnCodeWorker(QObject):
                 std_base_a=self.cfg.std_base_a,
                 std_hold_a=self.cfg.std_hold_a,
                 tflite_path=tflite_path,
+                data_dir=self.cfg.data_dir,
                 log_fn=self._log,
                 post_cfg=post_cfg
             )
             
             if res:
                 self._log("OK: Generated CNN library (cnn_lib)")
-                self.finished_ok.emit({"out_dir": self.cfg.outdir})
+                payload = {"out_dir": self.cfg.outdir}
+                if isinstance(res, dict):
+                    payload.update(res)
+                self.finished_ok.emit(payload)
             else:
                 self.finished_err.emit("Generation failed (check log)")
                 
@@ -3269,6 +3282,18 @@ class MainWindow(QMainWindow):
         h3.addWidget(self.le_gen_cnn_outdir); h3.addWidget(self.btn_gen_cnn_browse_outdir)
         f.addRow("Output dir (cnn_lib):", w3)
 
+        self.le_gen_cnn_data_dir = QLineEdit()
+        self.le_gen_cnn_data_dir.setPlaceholderText("Select CSV window folder for TinyOL default export")
+        tinyol_data_dir = self.edit_tinyol_data_dir.text().strip() if hasattr(self, "edit_tinyol_data_dir") else ""
+        if tinyol_data_dir:
+            self.le_gen_cnn_data_dir.setText(tinyol_data_dir)
+        self.btn_gen_cnn_browse_data_dir = QPushButton("Browse...")
+        self.btn_gen_cnn_browse_data_dir.clicked.connect(self.on_gen_cnn_browse_data_dir)
+        w4 = QWidget()
+        h4 = QHBoxLayout(w4); h4.setContentsMargins(0, 0, 0, 0)
+        h4.addWidget(self.le_gen_cnn_data_dir); h4.addWidget(self.btn_gen_cnn_browse_data_dir)
+        f.addRow("TinyOL data dir:", w4)
+
         self.le_gen_cnn_basename = QLineEdit("cnn")
         f.addRow("Base output name:", self.le_gen_cnn_basename)
 
@@ -3415,6 +3440,11 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, "Select Output Directory (cnn_lib)")
         if path: self.le_gen_cnn_outdir.setText(path)
 
+    def on_gen_cnn_browse_data_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "Select TinyOL CSV Data Directory")
+        if path:
+            self.le_gen_cnn_data_dir.setText(path)
+
     def on_gen_cnn_import_std(self):
         # Mirroring the logic from Detect tab
         default_path = r"C:\Users\USE\Desktop\SEAN_CODE\mlp_station_git\station_v15\15手勢log"
@@ -3545,15 +3575,20 @@ class MainWindow(QMainWindow):
     def on_gen_cnn_all(self):
         if self.thread_gen_cnn is not None:
             return
+
+        meta_path = self.le_gen_cnn_meta.text().strip()
+        data_dir = self.le_gen_cnn_data_dir.text().strip()
+        if not data_dir and meta_path:
+            data_dir = str(Path(meta_path).parent)
         
         cfg = GenCnnCodeCfg(
-            meta_path=self.le_gen_cnn_meta.text().strip(),
+            meta_path=meta_path,
             model_path=self.le_gen_cnn_model.text().strip(),
             outdir=self.le_gen_cnn_outdir.text().strip(),
             base_name=self.le_gen_cnn_basename.text().strip(),
             std_base_a=[sb.value() for sb in self.gen_cnn_std_base_spins],
             std_hold_a=[sb.value() for sb in self.gen_cnn_std_hold_spins],
-            data_dir=self.edit_data_dir.text().strip(),
+            data_dir=data_dir,
             alpha=self.dsb_gen_cnn_alpha.value(),
             margin=self.dsb_gen_cnn_margin.value(),
             infer_stride=self.spin_gen_cnn_stride.value(),
@@ -3561,7 +3596,7 @@ class MainWindow(QMainWindow):
             tier_data=self._extract_tier_data_from_ui(self.tbl_tier_base, self.tbl_gen_cnn_tiers)
         )
 
-        self.append_log(_tag_line("GEN_CNN", "[UI] Starting CNN Gen All ..."))
+        self.append_log(_tag_line("GEN_CNN", f"[UI] Starting CNN Gen All ... data_dir={data_dir or '<empty>'}"))
         self._set_busy("gen_cnn")
 
         self.thread_gen_cnn = QThread()

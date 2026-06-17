@@ -3,42 +3,43 @@
 
 #include <stdint.h>
 
+#define TINYOL_DEFAULT_SHARED_BASE_HOLD 1
 #define TINYOL_DEFAULT_WINDOW_LEN 35
 #define TINYOL_DEFAULT_CHANNEL_COUNT 5
 
-#define TINYOL_DEFAULT_CLS_0_COUNT 1
+#define TINYOL_DEFAULT_CLS_0_COUNT 4
 extern const uint16_t tinyol_default_cls_0_windows[TINYOL_DEFAULT_CLS_0_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_0_base[TINYOL_DEFAULT_CLS_0_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_0_hold[TINYOL_DEFAULT_CLS_0_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_0_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_0_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
-#define TINYOL_DEFAULT_CLS_1_COUNT 1
+#define TINYOL_DEFAULT_CLS_1_COUNT 5
 extern const uint16_t tinyol_default_cls_1_windows[TINYOL_DEFAULT_CLS_1_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_1_base[TINYOL_DEFAULT_CLS_1_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_1_hold[TINYOL_DEFAULT_CLS_1_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_1_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_1_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
-#define TINYOL_DEFAULT_CLS_2_COUNT 1
+#define TINYOL_DEFAULT_CLS_2_COUNT 4
 extern const uint16_t tinyol_default_cls_2_windows[TINYOL_DEFAULT_CLS_2_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_2_base[TINYOL_DEFAULT_CLS_2_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_2_hold[TINYOL_DEFAULT_CLS_2_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_2_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_2_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
-#define TINYOL_DEFAULT_CLS_3_COUNT 1
+#define TINYOL_DEFAULT_CLS_3_COUNT 4
 extern const uint16_t tinyol_default_cls_3_windows[TINYOL_DEFAULT_CLS_3_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_3_base[TINYOL_DEFAULT_CLS_3_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_3_hold[TINYOL_DEFAULT_CLS_3_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_3_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_3_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
-#define TINYOL_DEFAULT_CLS_4_COUNT 1
+#define TINYOL_DEFAULT_CLS_4_COUNT 5
 extern const uint16_t tinyol_default_cls_4_windows[TINYOL_DEFAULT_CLS_4_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_4_base[TINYOL_DEFAULT_CLS_4_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_4_hold[TINYOL_DEFAULT_CLS_4_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_4_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_4_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
-#define TINYOL_DEFAULT_CLS_5_COUNT 1
+#define TINYOL_DEFAULT_CLS_5_COUNT 7
 extern const uint16_t tinyol_default_cls_5_windows[TINYOL_DEFAULT_CLS_5_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_5_base[TINYOL_DEFAULT_CLS_5_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_5_hold[TINYOL_DEFAULT_CLS_5_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_5_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_5_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
-#define TINYOL_DEFAULT_CLS_6_COUNT 1
+#define TINYOL_DEFAULT_CLS_6_COUNT 4
 extern const uint16_t tinyol_default_cls_6_windows[TINYOL_DEFAULT_CLS_6_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_6_base[TINYOL_DEFAULT_CLS_6_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
-extern const uint16_t tinyol_default_cls_6_hold[TINYOL_DEFAULT_CLS_6_COUNT][TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_6_base[TINYOL_DEFAULT_CHANNEL_COUNT];
+extern const uint16_t tinyol_default_cls_6_hold[TINYOL_DEFAULT_CHANNEL_COUNT];
 
 #endif

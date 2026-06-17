@@ -76,6 +76,11 @@
       <configSetting altId="debug0.swclk.p300" configurationId="debug0.swclk" isUsedByDriver="true" peripheral="DEBUG0"/>
       <configSetting altId="debug0.swdio.p108" configurationId="debug0.swdio" isUsedByDriver="true" peripheral="DEBUG0"/>
       <configSetting altId="gpt2.gtioca.p113" configurationId="gpt2.gtioca" isUsedByDriver="true" peripheral="GPT2"/>
+      <configSetting altId="p004.output.high" configurationId="p004"/>
+      <configSetting altId="p005.output.high" configurationId="p005"/>
+      <configSetting altId="p006.output.low" configurationId="p006"/>
+      <configSetting altId="p007.output.low" configurationId="p007"/>
+      <configSetting altId="p008.output.low" configurationId="p008"/>
       <configSetting altId="p205.output.low" configurationId="p205"/>
       <configSetting altId="p400.output.low" configurationId="p400"/>
       <configSetting altId="p401.output.low" configurationId="p401"/>
@@ -91,6 +96,8 @@
       <configSetting altId="sci0.txd.p101" configurationId="sci0.txd" isUsedByDriver="true" peripheral="SCI0"/>
       <configSetting altId="sci6.rxd.p304" configurationId="sci6.rxd" isUsedByDriver="true" peripheral="SCI6"/>
       <configSetting altId="sci6.txd.p305" configurationId="sci6.txd" isUsedByDriver="true" peripheral="SCI6"/>
+      <configSetting altId="sci8.rxd.p104" configurationId="sci8.rxd" peripheral="SCI8"/>
+      <configSetting altId="sci8.txd.p105" configurationId="sci8.txd" peripheral="SCI8"/>
       <configSetting altId="sci9.rxd.p110" configurationId="sci9.rxd" isUsedByDriver="true" peripheral="SCI9"/>
       <configSetting altId="sci9.txd.p109" configurationId="sci9.txd" isUsedByDriver="true" peripheral="SCI9"/>
       <configSetting altId="usbfs0.ovrcura.p501" configurationId="usbfs0.ovrcura" isUsedByDriver="true" peripheral="USB_FS0"/>

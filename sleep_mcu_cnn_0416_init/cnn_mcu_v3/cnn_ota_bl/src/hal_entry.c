@@ -46,9 +46,9 @@ void deinit_and_jump(struct boot_rsp *p_rsp)
     {
         uart9_print("[INFO] Bootloader: Launching Application 1 (Slot 1 at 0x8000)...\r\n");
     }
-    else if (p_rsp->br_image_off == 0x88000)
+    else if (p_rsp->br_image_off == 0x78000)
     {
-        uart9_print("[INFO] Bootloader: Launching Application 2 (Slot 2 at 0x88000)...\r\n");
+        uart9_print("[INFO] Bootloader: Launching Application 2 (Slot 2 at 0x78000)...\r\n");
     }
     else
     {

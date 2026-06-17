@@ -1,5 +1,9 @@
 import os
 import sys
+import json
+import re
+from pathlib import Path
+
 import numpy as np
 
 # --- 1. Templates for Feature Extraction ---
@@ -45,6 +49,14 @@ bool cnn_compute_features(
     float *out_variance,
     float *out_mean);
 
+bool cnn_compute_features_from_window(
+    const uint16_t window_u16[CNN_WIN_LEN][CNN_CH_USED],
+    const uint16_t *base_u16,
+    const uint16_t *holdavg_u16,
+    float *out_waveform,
+    float *out_variance,
+    float *out_mean);
+
 #endif
 '''
 
@@ -76,6 +88,36 @@ static inline float compute_dn(uint16_t row, uint16_t base, uint16_t holdavg) {
     float span = fabsf((float)((int32_t)holdavg - (int32_t)base));
     if (span < 1.0f) span = 1.0f;
     return d / (span + CNN_EPS);
+}
+
+static void compute_features_from_window_core(
+    const uint16_t window_u16[CNN_WIN_LEN][CNN_CH_USED],
+    const uint16_t *base_u16,
+    const uint16_t *holdavg_u16,
+    float *out_waveform,
+    float *out_variance,
+    float *out_mean) {
+    for (uint8_t ch = 0; ch < (uint8_t)CNN_CH_USED; ch++) {
+        float sum = 0.0f;
+        float sum_sq = 0.0f;
+        float prev_v = 0.0f;
+        for (uint16_t i = 0; i < (uint16_t)CNN_WIN_LEN; i++) {
+            float v = compute_dn(window_u16[i][ch], base_u16[ch], holdavg_u16[ch]);
+            out_waveform[i * (uint16_t)CNN_INPUT_CH_TOTAL + ch] = v;
+            if (i == 0) {
+                out_waveform[i * (uint16_t)CNN_INPUT_CH_TOTAL + (uint16_t)CNN_INPUT_CH_LEVEL + ch] = 0.0f;
+            } else {
+                out_waveform[i * (uint16_t)CNN_INPUT_CH_TOTAL + (uint16_t)CNN_INPUT_CH_LEVEL + ch] = (v - prev_v) * CNN_SLOPE_FACTOR;
+            }
+            prev_v = v;
+            sum += v;
+            sum_sq += v * v;
+        }
+        float avg = sum / (float)CNN_WIN_LEN;
+        float var = (sum_sq / (float)CNN_WIN_LEN) - (avg * avg);
+        out_mean[ch] = avg;
+        out_variance[ch] = (var > 0.0f) ? var : 0.0f;
+    }
 }
 
 bool cnn_compute_features(
@@ -127,13 +169,54 @@ bool cnn_compute_features(
     }
     return true;
 }
+
+bool cnn_compute_features_from_window(
+    const uint16_t window_u16[CNN_WIN_LEN][CNN_CH_USED],
+    const uint16_t *base_u16,
+    const uint16_t *holdavg_u16,
+    float *out_waveform,
+    float *out_variance,
+    float *out_mean) {
+    if (!window_u16 || !base_u16 || !holdavg_u16 || !out_waveform || !out_variance || !out_mean) {
+        return false;
+    }
+    compute_features_from_window_core(window_u16, base_u16, holdavg_u16, out_waveform, out_variance, out_mean);
+    return true;
+}
 '''
 
 
 # --- 2. Template for Industrial-grade Inference Engine ---
+TEMPLATE_DETECT_H = '''#ifndef CNN_DETECT_H
+#define CNN_DETECT_H
+#define CNN_OUT_DIM {{NUM_CLASSES}}u
+#include <stdbool.h>
+
+typedef struct {
+    float f1_out[128];
+    float f2_z[64];
+    float f2_out[64];
+    float logits[CNN_OUT_DIM];
+    float proba[CNN_OUT_DIM];
+} cnn_detect_cache_t;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+int cnn_detect_init(void);
+int cnn_detect_predict(const float *waveform_in, const float *variance_in, const float *mean_in, float *out_proba);
+bool cnn_detect_forward_cache(const float *waveform_in, const float *variance_in, const float *mean_in, cnn_detect_cache_t *cache);
+#ifdef __cplusplus
+}
+#endif
+#endif
+'''
+
 TEMPLATE_DETECT_C = '''#include "cnn_detect.h"
 #include "cnn_weights.h"
 #include "cnn_features_lib.h"
+#include "../app/sil_app_tinyol.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
@@ -237,7 +320,10 @@ int cnn_detect_init(void) {
     return 0;
 }
 
-int cnn_detect_predict(const float *waveform_in, const float *var_in, const float *mean_in, float *proba_out) {
+bool cnn_detect_forward_cache(const float *waveform_in, const float *var_in, const float *mean_in, cnn_detect_cache_t *cache) {
+    if (!waveform_in || !var_in || !mean_in || !cache) {
+        return false;
+    }
     // L1: Conv1D (WIN, CH) -> (WIN, 48) -> SE -> MaxPool(WIN/2, 48)
     int l1_len = (int)CNN_WIN_LEN;
     conv1d_same_padding(waveform_in, l1_len, (int)CNN_INPUT_CH_TOTAL, CONV1_W, CONV1_B, 48, 5, workspace_a);
@@ -294,29 +380,44 @@ int cnn_detect_predict(const float *waveform_in, const float *var_in, const floa
     }
 
     // Bottleneck F2: 128 -> 64
-    float f2_out[64];
+    const float *dense_f2_w = SIL_APP_TINYOL_GetDenseF2Weights();
+    const float *dense_f2_b = SIL_APP_TINYOL_GetDenseF2Bias();
+    const float *dense_out_w = SIL_APP_TINYOL_GetDenseOutWeights();
+    const float *dense_out_b = SIL_APP_TINYOL_GetDenseOutBias();
     for (int oc = 0; oc < 64; oc++) {
-        float sum = DENSE_F2_B[oc];
-        for (int ic = 0; ic < 128; ic++) sum += f1_out[ic] * DENSE_F2_W[ic * 64 + oc];
-        f2_out[oc] = (sum > 0) ? sum : sum * 0.1f;
+        float sum = dense_f2_b[oc];
+        for (int ic = 0; ic < 128; ic++) sum += f1_out[ic] * dense_f2_w[ic * 64 + oc];
+        cache->f2_z[oc] = sum;
+        cache->f2_out[oc] = (sum > 0) ? sum : sum * 0.1f;
     }
+    memcpy(cache->f1_out, f1_out, sizeof(f1_out));
 
     // Final Dense (Softmax Output): 64 -> CNN_OUT_DIM
-    float scores[CNN_OUT_DIM];
     float max_score = -1e30f;
     for (int oc = 0; oc < (int)CNN_OUT_DIM; oc++) {
-        float sum = DENSE_OUT_B[oc];
-        for (int ic = 0; ic < 64; ic++) sum += f2_out[ic] * DENSE_OUT_W[ic * CNN_OUT_DIM + oc];
-        scores[oc] = sum;
+        float sum = dense_out_b[oc];
+        for (int ic = 0; ic < 64; ic++) sum += cache->f2_out[ic] * dense_out_w[ic * CNN_OUT_DIM + oc];
+        cache->logits[oc] = sum;
         if (sum > max_score) max_score = sum;
     }
 
     float exp_sum = 0;
     for (int i = 0; i < (int)CNN_OUT_DIM; i++) {
-        scores[i] = expf(scores[i] - max_score);
-        exp_sum += scores[i];
+        cache->proba[i] = expf(cache->logits[i] - max_score);
+        exp_sum += cache->proba[i];
     }
-    for (int i = 0; i < (int)CNN_OUT_DIM; i++) proba_out[i] = scores[i] / exp_sum;
+    for (int i = 0; i < (int)CNN_OUT_DIM; i++) cache->proba[i] /= exp_sum;
+    return true;
+}
+
+int cnn_detect_predict(const float *waveform_in, const float *var_in, const float *mean_in, float *proba_out) {
+    cnn_detect_cache_t cache;
+    if (!cnn_detect_forward_cache(waveform_in, var_in, mean_in, &cache)) {
+        return -1;
+    }
+    for (int i = 0; i < (int)CNN_OUT_DIM; i++) {
+        proba_out[i] = cache.proba[i];
+    }
 
     return 0;
 }
@@ -466,7 +567,232 @@ int cnn_post_update(cnn_post_ctx_t *ctx, const float *raw_proba) {
 }
 '''
 
-def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, model_path=None, log_fn=None, post_cfg=None):
+def _collect_tinyol_default_windows(meta, data_dir, log_fn, start_offset=30, max_tail_samples=270):
+    id_to_name = meta.get("id_to_name", {}) or {}
+    if not data_dir:
+        return {}, [], []
+
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        return {}, [], []
+
+    import pandas as pd
+
+    window_len = int(meta.get("windowing", {}).get("window_len", 100))
+    channels = [int(ch) for ch in meta.get("channels", [])]
+    buckets = {int(k): [] for k in id_to_name}
+    manifest = []
+    prefix_to_label_id = {}
+    for label_id, label_name in id_to_name.items():
+        prefix_to_label_id[str(label_id).strip().lower()] = int(label_id)
+        if label_name is not None:
+            prefix_to_label_id[str(label_name).strip().lower()] = int(label_id)
+
+    best_candidates = {}
+
+    for csv_path in sorted(data_path.glob("*.csv")):
+        prefix = csv_path.stem.split("-")[0].strip().lower()
+        label_id = None
+        if prefix in prefix_to_label_id:
+            label_id = prefix_to_label_id[prefix]
+        elif prefix.isdigit():
+            label_id = int(prefix)
+        if label_id is None:
+            continue
+        if id_to_name and label_id not in id_to_name:
+            continue
+
+        try:
+            df = pd.read_csv(csv_path)
+        except Exception as ex:
+            log_fn(f"WARN: Failed to read default data CSV {csv_path}: {ex}")
+            continue
+
+        if df.empty or len(df) <= start_offset:
+            continue
+
+        if not channels:
+            inferred = []
+            for col in df.columns:
+                if col.startswith("ROWCH"):
+                    digits = re.sub(r"\D", "", col)
+                    if digits:
+                        inferred.append(int(digits))
+            channels = sorted(set(inferred))
+        if not channels:
+            continue
+
+        required_cols = [f"ROWCH{i}" for i in channels]
+        if any(col not in df.columns for col in required_cols):
+            continue
+
+        usable_tail = min(len(df) - start_offset, int(max_tail_samples))
+        if usable_tail < window_len:
+            continue
+
+        tail = df.iloc[start_offset:start_offset + usable_tail].copy()
+        tail_vals = tail[required_cols].astype(float).to_numpy()
+        if tail_vals.shape[0] < window_len:
+            continue
+
+        roughness = float(np.abs(np.diff(tail_vals, axis=0)).mean()) if tail_vals.shape[0] > 1 else float("inf")
+        base_cols = [f"MOVBASE{i}" for i in channels if f"MOVBASE{i}" in tail.columns]
+        hold_cols = [f"HOLDAVG{i}" for i in channels if f"HOLDAVG{i}" in tail.columns]
+        base_var = float(tail[base_cols].astype(float).std(ddof=0).mean()) if base_cols else 0.0
+        hold_var = float(tail[hold_cols].astype(float).std(ddof=0).mean()) if hold_cols else 0.0
+        signal_var = float(tail_vals.std(ddof=0).mean())
+        score = (
+            round(roughness, 6),
+            round(base_var, 6),
+            round(hold_var, 6),
+            round(signal_var, 6),
+            -usable_tail,
+            len(df),
+            csv_path.name.lower(),
+        )
+        prev = best_candidates.get(label_id)
+        if prev is None or score < prev["score"]:
+            best_candidates[label_id] = {
+                "score": score,
+                "csv_path": csv_path,
+                "df": df,
+                "usable_tail": usable_tail,
+                "roughness": roughness,
+                "base_var": base_var,
+                "hold_var": hold_var,
+                "signal_var": signal_var,
+                "required_cols": required_cols,
+            }
+
+    for label_id in sorted(best_candidates):
+        cand = best_candidates[label_id]
+        csv_path = cand["csv_path"]
+        df = cand["df"]
+        usable_tail = cand["usable_tail"]
+        required_cols = cand["required_cols"]
+        tail = df.iloc[start_offset:start_offset + usable_tail].copy()
+        label_name = str(id_to_name.get(label_id, f"cl{label_id}"))
+        tail["GESTURE"] = label_name
+        tail["TARGET_ID"] = label_id
+        if "SEQ" not in tail.columns:
+            tail.insert(0, "SEQ", range(start_offset, start_offset + len(tail)))
+
+        rows = tail[required_cols].astype(int).values.tolist()
+        base = [int(tail.iloc[0].get(f"MOVBASE{i}", 0)) for i in channels]
+        hold = [int(tail.iloc[0].get(f"HOLDAVG{i}", 0)) for i in channels]
+
+        window_count = usable_tail // window_len
+        if window_count <= 0:
+            continue
+        start_positions = [idx * window_len for idx in range(window_count)]
+
+        for win_idx, start_pos in enumerate(start_positions):
+            win_rows = rows[start_pos:start_pos + window_len]
+            if len(win_rows) != window_len:
+                continue
+            buckets.setdefault(label_id, []).append({
+                "rows": win_rows,
+                "base": base,
+                "hold": hold,
+                "source_csv": str(csv_path),
+                "window_index": win_idx,
+                "tail_rows": usable_tail,
+            })
+
+        log_fn(
+            f"INFO: Default data label={label_id} file={csv_path.name} "
+            f"roughness={cand['roughness']:.3f} base_var={cand['base_var']:.3f} "
+            f"hold_var={cand['hold_var']:.3f} tail_rows={usable_tail} "
+            f"windows={len(buckets.get(label_id, []))}"
+        )
+        manifest.append({
+            "label_id": label_id,
+            "label_name": label_name,
+            "source_csv": str(csv_path),
+            "tail_rows_used": usable_tail,
+            "roughness": round(cand["roughness"], 6),
+            "base_var": round(cand["base_var"], 6),
+            "hold_var": round(cand["hold_var"], 6),
+            "window_count": len(buckets.get(label_id, [])),
+            "window_step": window_len,
+            "window_mode": "non_overlap",
+        })
+
+    return buckets, channels, manifest
+
+
+def _render_tinyol_windows_files(out_dir, file_prefix, header_guard, buckets, channels, window_len, manifest, manifest_name, log_fn):
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    header_path = out_path / f"{file_prefix}.h"
+    source_path = out_path / f"{file_prefix}.c"
+    manifest_path = out_path / manifest_name
+
+    lines_h = [
+        f"#ifndef {header_guard}",
+        f"#define {header_guard}",
+        "",
+        "#include <stdint.h>",
+        "",
+        "#define TINYOL_DEFAULT_SHARED_BASE_HOLD 1",
+        f"#define TINYOL_DEFAULT_WINDOW_LEN {int(window_len)}",
+        f"#define TINYOL_DEFAULT_CHANNEL_COUNT {len(channels)}",
+        "",
+    ]
+    lines_c = [f'#include "{file_prefix}.h"', ""]
+
+    for label_id in sorted(buckets):
+        samples = buckets[label_id]
+        if not samples:
+            continue
+
+        count = len(samples)
+        lines_h.append(f"#define TINYOL_DEFAULT_CLS_{label_id}_COUNT {count}")
+        lines_h.append(
+            f"extern const uint16_t tinyol_default_cls_{label_id}_windows[TINYOL_DEFAULT_CLS_{label_id}_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT];"
+        )
+        lines_h.append(
+            f"extern const uint16_t tinyol_default_cls_{label_id}_base[TINYOL_DEFAULT_CHANNEL_COUNT];"
+        )
+        lines_h.append(
+            f"extern const uint16_t tinyol_default_cls_{label_id}_hold[TINYOL_DEFAULT_CHANNEL_COUNT];"
+        )
+        lines_h.append("")
+
+        win_rows = []
+        base_rows = []
+        hold_rows = []
+        for sample in samples:
+            row_text = ",\n        ".join("{" + ", ".join(str(int(v)) for v in row) + "}" for row in sample["rows"])
+            win_rows.append("    {\n        " + row_text + "\n    }")
+            base_rows.append("    {" + ", ".join(str(int(v)) for v in sample["base"]) + "}")
+            hold_rows.append("    {" + ", ".join(str(int(v)) for v in sample["hold"]) + "}")
+
+        lines_c.append(
+            f"const uint16_t tinyol_default_cls_{label_id}_windows[TINYOL_DEFAULT_CLS_{label_id}_COUNT][TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT] = {{"
+        )
+        lines_c.append(",\n".join(win_rows))
+        lines_c.append("};\n")
+        lines_c.append(
+            f"const uint16_t tinyol_default_cls_{label_id}_base[TINYOL_DEFAULT_CHANNEL_COUNT] = {{"
+        )
+        lines_c.append("    " + ", ".join(str(int(v)) for v in samples[0]["base"]))
+        lines_c.append("};\n")
+        lines_c.append(
+            f"const uint16_t tinyol_default_cls_{label_id}_hold[TINYOL_DEFAULT_CHANNEL_COUNT] = {{"
+        )
+        lines_c.append("    " + ", ".join(str(int(v)) for v in samples[0]["hold"]))
+        lines_c.append("};\n")
+
+    lines_h.append("#endif")
+    header_path.write_text("\n".join(lines_h), encoding="utf-8")
+    source_path.write_text("\n".join(lines_c), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    log_fn(f"OK: Default TinyOL data written to {header_path.name}, {source_path.name}")
+    return str(header_path), str(source_path), str(manifest_path)
+
+
+def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, model_path=None, data_dir=None, log_fn=None, post_cfg=None):
     if log_fn is None: log_fn = print
     def _log(msg): log_fn(f"[GEN_CNN] {msg}")
 
@@ -494,7 +820,7 @@ def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, mo
 
     win_len = meta.get('windowing', {}).get('window_len', 55)
     chs_used = len(meta.get('channels', [0,1,2,3,4]))
-    infer_stride = post_cfg.get('infer_stride', 10) if post_cfg else 10
+    infer_stride = post_cfg.get('infer_stride', 3) if post_cfg else 3
     
     id_to_name = meta.get('id_to_name', {})
     num_classes = meta.get('num_classes', len(id_to_name))
@@ -504,10 +830,10 @@ def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, mo
 
     # --- Backfill Parameters from UI ---
     pcfg = post_cfg or {
-        'alpha': 0.60, 'margin': 0.05, 'thresh_entry': 0.50, 
+        'alpha': 0.20, 'margin': 0.45, 'thresh_entry': 0.50, 
         'stable_normal': 10, 'stable_restricted': 20, 
         'thresh_priority': 0.70, 'thresh_restricted': 0.75,
-        'priority_ids': [14, 15, 5, 10, 11, 0], 'restricted_ids': [1, 2, 13]
+        'priority_ids': [0, 1, 2, 3, 4, 5, 6], 'restricted_ids': []
     }
     
     # Priority check logic for C
@@ -525,6 +851,7 @@ def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, mo
 
     # Inference engine threshold should be loose (0.40f) to allow post-processor to filter
     detect_c = TEMPLATE_DETECT_C.replace("{{THRESHOLD}}", "0.40")
+    detect_h = TEMPLATE_DETECT_H.replace("{{NUM_CLASSES}}", str(num_classes))
 
     post_h = TEMPLATE_POST_H.replace("{{ALPHA}}", f"{pcfg['alpha']:.2f}") \
                              .replace("{{MARGIN}}", f"{pcfg['margin']:.2f}") \
@@ -548,13 +875,58 @@ def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, mo
             _log("OK: Weights exported.")
         except Exception as ex:
             _log(f"WARN: Weight export failed: {ex}")
+
+    tinyol_default_paths = {}
+    tinyol_buckets, tinyol_channels, tinyol_manifest = _collect_tinyol_default_windows(
+        meta=meta,
+        data_dir=data_dir,
+        log_fn=_log,
+        start_offset=30,
+    )
+    if tinyol_manifest and tinyol_buckets:
+        tinyol_window_len = int(meta.get("windowing", {}).get("window_len", 100))
+        header_path, source_path, manifest_path = _render_tinyol_windows_files(
+            out_dir=out_dir,
+            file_prefix="tinyol_default_windows",
+            header_guard="TINYOL_DEFAULT_WINDOWS_H",
+            buckets=tinyol_buckets,
+            channels=tinyol_channels or [0, 1, 2, 3, 4, 5],
+            window_len=tinyol_window_len,
+            manifest=tinyol_manifest,
+            manifest_name="tinyol_default_manifest.json",
+            log_fn=_log,
+        )
+        tinyol_default_paths = {
+            "header_path": header_path,
+            "source_path": source_path,
+            "manifest_path": manifest_path,
+        }
+    elif data_dir:
+        _log(f"WARN: TinyOL default data export skipped (no usable CSV windows found in {data_dir}).")
     
     # --- Write Files ---
     files_to_write = {
         "cnn_detect.c": detect_c,
-        "cnn_detect.h": f"#ifndef CNN_DETECT_H\n#define CNN_DETECT_H\n#define CNN_OUT_DIM {num_classes}u\n#ifdef __cplusplus\nextern \"C\" {{\n#endif\nint cnn_detect_init(void);\nint cnn_detect_predict(const float *waveform_in, const float *variance_in, const float *mean_in, float *out_proba);\n#ifdef __cplusplus\n}}\n#endif\n#endif\n",
-        "cnn_model_data.c": f'#include "cnn_model_data.h"\n#include <stddef.h>\nconst uint16_t STD_BASELINE_A_U16[6] = {{ {", ".join(map(str, std_base_a))} }};\nconst uint16_t STD_HOLDAVG_A_U16[6] = {{ {", ".join(map(str, std_hold_a))} }};\nconst char* const CNN_GESTURE_NAMES[CNN_OUT_DIM] = {{\n' + "".join([f'    "{n}",\n' for n in gesture_names]) + "};\n",
-        "cnn_model_data.h": '#ifndef CNN_MODEL_DATA_H\n#define CNN_MODEL_DATA_H\n#include <stdint.h>\n#include "cnn_detect.h"\nextern const uint16_t STD_BASELINE_A_U16[6];\nextern const uint16_t STD_HOLDAVG_A_U16[6];\nextern const char* const CNN_GESTURE_NAMES[CNN_OUT_DIM];\n#endif\n',
+        "cnn_detect.h": detect_h,
+        "cnn_model_data.c": (
+            '#include "cnn_model_data.h"\n'
+            '#include <stddef.h>\n'
+            f'const uint16_t STD_BASELINE_A_U16[{len(std_base_a)}] = {{ {", ".join(map(str, std_base_a))} }};\n'
+            f'const uint16_t STD_HOLDAVG_A_U16[{len(std_hold_a)}] = {{ {", ".join(map(str, std_hold_a))} }};\n'
+            'const char* const CNN_GESTURE_NAMES[CNN_OUT_DIM] = {\n'
+            + "".join([f'    "{n}",\n' for n in gesture_names])
+            + "};\n"
+        ),
+        "cnn_model_data.h": (
+            '#ifndef CNN_MODEL_DATA_H\n'
+            '#define CNN_MODEL_DATA_H\n'
+            '#include <stdint.h>\n'
+            '#include "cnn_detect.h"\n'
+            f'extern const uint16_t STD_BASELINE_A_U16[{len(std_base_a)}];\n'
+            f'extern const uint16_t STD_HOLDAVG_A_U16[{len(std_hold_a)}];\n'
+            'extern const char* const CNN_GESTURE_NAMES[CNN_OUT_DIM];\n'
+            '#endif\n'
+        ),
         "cnn_features_lib.c": features_c,
         "cnn_features_lib.h": features_h,
         "cnn_postprocess.c": post_c,
@@ -565,8 +937,12 @@ def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, mo
         with open(os.path.join(out_dir, filename), "w") as f:
             f.write(content)
             
-    _log(f"SUCCESS: Generated 8 Industrial CNN files in {out_dir}")
-    return True
+    total_files = len(files_to_write) + (3 if tinyol_default_paths else 0)
+    _log(f"SUCCESS: Generated {total_files} files in {out_dir}")
+    result = {"out_dir": out_dir}
+    if tinyol_default_paths:
+        result["tinyol_default"] = tinyol_default_paths
+    return result
 
 if __name__ == "__main__":
     generate_cnn_lib(".", None, [0]*6, [0]*6, "gesture_model_meta_v5.pkl")

@@ -75,6 +75,10 @@ static uint8_t g_tinyol_flashtest_write_buf[TINYOL_FLASHTEST_BUFFER_MAX];
 #define TINYOL_NOTIFY_HOLD_TICKS 250U
 #define TINYOL_CALIB_HOLD_TICKS 500U
 
+#ifndef TINYOL_DEFAULT_SHARED_BASE_HOLD
+#define TINYOL_DEFAULT_SHARED_BASE_HOLD 0
+#endif
+
 static uint32_t SIL_APP_TINYOL_GetBlockSize(uint32_t address)
 {
     if (address < 0x00010000U)
@@ -236,23 +240,47 @@ static void SIL_APP_TINYOL_SendFlashOpTrace(const char *phase, uint32_t addr, ui
     SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
 }
 
-static const uint16_t (*SIL_APP_TINYOL_GetDefaultWindow(uint16_t label))[CNN_CH_USED]
+static const uint16_t (*SIL_APP_TINYOL_GetDefaultWindowSet(uint16_t label))[TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT]
 {
     switch (label) {
-    case 0: return tinyol_default_cls_0_windows[0];
-    case 1: return tinyol_default_cls_1_windows[0];
-    case 2: return tinyol_default_cls_2_windows[0];
-    case 3: return tinyol_default_cls_3_windows[0];
-    case 4: return tinyol_default_cls_4_windows[0];
-    case 5: return tinyol_default_cls_5_windows[0];
-    case 6: return tinyol_default_cls_6_windows[0];
-    default: return tinyol_default_cls_0_windows[0];
+    case 0: return tinyol_default_cls_0_windows;
+    case 1: return tinyol_default_cls_1_windows;
+    case 2: return tinyol_default_cls_2_windows;
+    case 3: return tinyol_default_cls_3_windows;
+    case 4: return tinyol_default_cls_4_windows;
+    case 5: return tinyol_default_cls_5_windows;
+    case 6: return tinyol_default_cls_6_windows;
+    default: return tinyol_default_cls_0_windows;
+    }
+}
+
+static uint16_t SIL_APP_TINYOL_GetDefaultWindowCount(uint16_t label)
+{
+    switch (label) {
+    case 0: return (uint16_t)TINYOL_DEFAULT_CLS_0_COUNT;
+    case 1: return (uint16_t)TINYOL_DEFAULT_CLS_1_COUNT;
+    case 2: return (uint16_t)TINYOL_DEFAULT_CLS_2_COUNT;
+    case 3: return (uint16_t)TINYOL_DEFAULT_CLS_3_COUNT;
+    case 4: return (uint16_t)TINYOL_DEFAULT_CLS_4_COUNT;
+    case 5: return (uint16_t)TINYOL_DEFAULT_CLS_5_COUNT;
+    case 6: return (uint16_t)TINYOL_DEFAULT_CLS_6_COUNT;
+    default: return (uint16_t)TINYOL_DEFAULT_CLS_0_COUNT;
     }
 }
 
 static const uint16_t *SIL_APP_TINYOL_GetDefaultBase(uint16_t label)
 {
     switch (label) {
+#if TINYOL_DEFAULT_SHARED_BASE_HOLD
+    case 0: return tinyol_default_cls_0_base;
+    case 1: return tinyol_default_cls_1_base;
+    case 2: return tinyol_default_cls_2_base;
+    case 3: return tinyol_default_cls_3_base;
+    case 4: return tinyol_default_cls_4_base;
+    case 5: return tinyol_default_cls_5_base;
+    case 6: return tinyol_default_cls_6_base;
+    default: return tinyol_default_cls_0_base;
+#else
     case 0: return tinyol_default_cls_0_base[0];
     case 1: return tinyol_default_cls_1_base[0];
     case 2: return tinyol_default_cls_2_base[0];
@@ -261,12 +289,23 @@ static const uint16_t *SIL_APP_TINYOL_GetDefaultBase(uint16_t label)
     case 5: return tinyol_default_cls_5_base[0];
     case 6: return tinyol_default_cls_6_base[0];
     default: return tinyol_default_cls_0_base[0];
+#endif
     }
 }
 
 static const uint16_t *SIL_APP_TINYOL_GetDefaultHold(uint16_t label)
 {
     switch (label) {
+#if TINYOL_DEFAULT_SHARED_BASE_HOLD
+    case 0: return tinyol_default_cls_0_hold;
+    case 1: return tinyol_default_cls_1_hold;
+    case 2: return tinyol_default_cls_2_hold;
+    case 3: return tinyol_default_cls_3_hold;
+    case 4: return tinyol_default_cls_4_hold;
+    case 5: return tinyol_default_cls_5_hold;
+    case 6: return tinyol_default_cls_6_hold;
+    default: return tinyol_default_cls_0_hold;
+#else
     case 0: return tinyol_default_cls_0_hold[0];
     case 1: return tinyol_default_cls_1_hold[0];
     case 2: return tinyol_default_cls_2_hold[0];
@@ -275,8 +314,15 @@ static const uint16_t *SIL_APP_TINYOL_GetDefaultHold(uint16_t label)
     case 5: return tinyol_default_cls_5_hold[0];
     case 6: return tinyol_default_cls_6_hold[0];
     default: return tinyol_default_cls_0_hold[0];
+#endif
     }
 }
+
+static bool SIL_APP_TINYOL_BuildFeatureSampleFromDefault(uint16_t label,
+                                                         uint16_t sample_idx,
+                                                         float *waveform,
+                                                         float *variance,
+                                                         float *mean);
 
 static void SIL_APP_TINYOL_CopyRecordedWindow(uint16_t slot, uint16_t window[TINYOL_RECORD_MAX_SAMPLES][TINYOL_RECORD_CHS])
 {
@@ -298,19 +344,25 @@ static void SIL_APP_TINYOL_CopyRecordedWindow(uint16_t slot, uint16_t window[TIN
 }
 
 static bool SIL_APP_TINYOL_BuildFeatureSampleFromDefault(uint16_t label,
+                                                         uint16_t sample_idx,
                                                          float *waveform,
                                                          float *variance,
                                                          float *mean) {
-    const uint16_t (*window)[CNN_CH_USED] = SIL_APP_TINYOL_GetDefaultWindow(label);
+    const uint16_t (*windows)[TINYOL_DEFAULT_WINDOW_LEN][TINYOL_DEFAULT_CHANNEL_COUNT] = SIL_APP_TINYOL_GetDefaultWindowSet(label);
     const uint16_t *base = SIL_APP_TINYOL_GetDefaultBase(label);
     const uint16_t *hold = SIL_APP_TINYOL_GetDefaultHold(label);
     uint16_t window_5[CNN_WIN_LEN][CNN_CH_USED];
     uint16_t i;
     uint16_t ch;
+    uint16_t window_count;
 
+    window_count = SIL_APP_TINYOL_GetDefaultWindowCount(label);
+    if (sample_idx >= window_count) {
+        return false;
+    }
     for (i = 0; i < CNN_WIN_LEN; i++) {
         for (ch = 0; ch < CNN_CH_USED; ch++) {
-            window_5[i][ch] = window[i][ch];
+            window_5[i][ch] = windows[sample_idx][i][ch];
         }
     }
     return cnn_compute_features_from_window(window_5, base, hold, waveform, variance, mean);
@@ -1001,7 +1053,10 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
         return FSP_ERR_INVALID_STATE;
     }
 
-    default_samples = (uint16_t)CNN_OUT_DIM;
+    default_samples = 0U;
+    for (uint16_t label = 0U; label < CNN_OUT_DIM; label++) {
+        default_samples = (uint16_t)(default_samples + SIL_APP_TINYOL_GetDefaultWindowCount(label));
+    }
     total_samples = (uint16_t)(default_samples + g_tinyol.record_capture_count);
     g_tinyol.replay_built = 1U;
     g_tinyol.replay_ready = 1U;
@@ -1065,6 +1120,7 @@ fsp_err_t SIL_APP_TINYOL_RunTraining(void)
     for (epoch = 0U; epoch < g_tinyol.epochs; epoch++) {
         uint32_t label;
         uint16_t idx;
+        uint16_t sample_idx;
         uint16_t local_batch = 0U;
         float epoch_loss = 0.0f;
         uint32_t epoch_correct = 0U;
@@ -1074,44 +1130,51 @@ fsp_err_t SIL_APP_TINYOL_RunTraining(void)
         local_batch = 0U;
 
         for (label = 0U; label < CNN_OUT_DIM; label++) {
-            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
-            float variance[CNN_AUX_VAR_DIM];
-            float mean[CNN_AUX_VAR_DIM];
-            if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault((uint16_t)label, waveform, variance, mean)) {
-                continue;
-            }
-            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
-                continue;
-            }
-
-            {
-                float prob = cache.proba[label];
-                if (prob < 1.0e-6f) {
-                    prob = 1.0e-6f;
+            uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount((uint16_t)label);
+            for (sample_idx = 0U; sample_idx < default_count; sample_idx++) {
+                float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+                float variance[CNN_AUX_VAR_DIM];
+                float mean[CNN_AUX_VAR_DIM];
+                if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault((uint16_t)label, sample_idx, waveform, variance, mean)) {
+                    continue;
                 }
-                epoch_loss += -logf(prob);
-                train_loss += -logf(prob);
-            }
-            epoch_total++;
-            train_total++;
-            {
-                uint16_t best = 0U;
-                for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
-                    if (cache.proba[idx] > cache.proba[best]) {
-                        best = idx;
+                if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                    continue;
+                }
+
+                {
+                    float prob = cache.proba[label];
+                    if (prob < 1.0e-6f) {
+                        prob = 1.0e-6f;
+                    }
+                    epoch_loss += -logf(prob);
+                    train_loss += -logf(prob);
+                }
+                epoch_total++;
+                train_total++;
+                {
+                    uint16_t best = 0U;
+                    for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
+                        if (cache.proba[idx] > cache.proba[best]) {
+                            best = idx;
+                        }
+                    }
+                    if (best == label) {
+                        epoch_correct++;
+                        train_correct++;
                     }
                 }
-                if (best == label) {
-                    epoch_correct++;
-                    train_correct++;
+                SIL_APP_TINYOL_AccumulateSampleGradients(&cache, (uint16_t)label);
+                local_batch++;
+                if (local_batch >= g_tinyol.batch_size) {
+                    SIL_APP_TINYOL_ApplyGradients(local_batch);
+                    local_batch = 0U;
                 }
             }
-            SIL_APP_TINYOL_AccumulateSampleGradients(&cache, (uint16_t)label);
-            local_batch++;
-            if ((local_batch >= g_tinyol.batch_size) || (label == (CNN_OUT_DIM - 1U))) {
-                SIL_APP_TINYOL_ApplyGradients(local_batch);
-                local_batch = 0U;
-            }
+        }
+
+        if (local_batch > 0U) {
+            SIL_APP_TINYOL_ApplyGradients(local_batch);
         }
 
         for (idx = 0U; idx < g_tinyol.record_capture_count; idx++) {
@@ -1194,41 +1257,45 @@ fsp_err_t SIL_APP_TINYOL_RunValidation(void)
     uint32_t target_total = 0U;
     uint16_t label;
     uint16_t idx;
+    uint16_t sample_idx;
 
     if (!g_tinyol.training_done) {
         return FSP_ERR_INVALID_STATE;
     }
 
     for (label = 0U; label < CNN_OUT_DIM; label++) {
-        float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
-        float variance[CNN_AUX_VAR_DIM];
-        float mean[CNN_AUX_VAR_DIM];
-        if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault(label, waveform, variance, mean)) {
-            continue;
-        }
-        if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
-            continue;
-        }
-        {
-            float prob = cache.proba[label];
-            uint16_t best = 0U;
-            if (prob < 1.0e-6f) {
-                prob = 1.0e-6f;
+        uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount(label);
+        for (sample_idx = 0U; sample_idx < default_count; sample_idx++) {
+            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+            float variance[CNN_AUX_VAR_DIM];
+            float mean[CNN_AUX_VAR_DIM];
+            if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault(label, sample_idx, waveform, variance, mean)) {
+                continue;
             }
-            val_loss += -logf(prob);
-            val_total++;
-            for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
-                if (cache.proba[idx] > cache.proba[best]) {
-                    best = idx;
+            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                continue;
+            }
+            {
+                float prob = cache.proba[label];
+                uint16_t best = 0U;
+                if (prob < 1.0e-6f) {
+                    prob = 1.0e-6f;
                 }
-            }
-            if (best == label) {
-                val_correct++;
-            }
-            if (label == g_tinyol.target_label) {
-                target_total++;
+                val_loss += -logf(prob);
+                val_total++;
+                for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
+                    if (cache.proba[idx] > cache.proba[best]) {
+                        best = idx;
+                    }
+                }
                 if (best == label) {
-                    target_correct++;
+                    val_correct++;
+                }
+                if (label == g_tinyol.target_label) {
+                    target_total++;
+                    if (best == label) {
+                        target_correct++;
+                    }
                 }
             }
         }
