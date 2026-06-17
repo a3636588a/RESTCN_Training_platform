@@ -50,6 +50,12 @@ typedef struct SIL_APP_TINYOL_HEAD_FLASH_S {
     float dense_f2_b[TINYOL_HEAD_F2_B_COUNT];
     float dense_out_w[TINYOL_HEAD_OUT_W_COUNT];
     float dense_out_b[TINYOL_HEAD_OUT_B_COUNT];
+    
+    /* Golden gesture storage fields */
+    uint32_t saved_record_label;
+    uint16_t saved_base_avg[6];
+    uint16_t saved_hold_avg[6];
+    uint16_t saved_record_raw[TINYOL_RECORD_MAX_SAMPLES][TINYOL_RECORD_CHS];
 } sil_app_tinyol_head_flash_s;
 
 static sil_app_tinyol_head_flash_s g_tinyol_head = {0};
@@ -69,6 +75,17 @@ static float g_tinyol_grad_f2_b[TINYOL_HEAD_F2_B_COUNT];
 static float g_tinyol_grad_out_w[TINYOL_HEAD_OUT_W_COUNT];
 static float g_tinyol_grad_out_b[TINYOL_HEAD_OUT_B_COUNT];
 static uint8_t g_tinyol_flashtest_write_buf[TINYOL_FLASHTEST_BUFFER_MAX];
+
+typedef struct {
+    uint8_t is_target;   /* 0: Default Replay, 1: RAM Target, 2: Flash Golden Target */
+    uint8_t label;       /* Class label */
+    uint16_t sample_idx; /* Index within default windows or target slots */
+} sil_train_sample_t;
+
+#define TINYOL_MAX_TRAIN_SAMPLES 128U
+static sil_train_sample_t g_train_samples[TINYOL_MAX_TRAIN_SAMPLES];
+static uint16_t g_train_sample_count = 0;
+static uint16_t g_train_indices[TINYOL_MAX_TRAIN_SAMPLES];
 
 #define TINYOL_NOTIFY_BASE_TICKS 250U
 #define TINYOL_CALIB_BASE_TICKS 500U
@@ -143,7 +160,11 @@ static uint32_t SIL_APP_TINYOL_HeadChecksum(const sil_app_tinyol_head_flash_s *h
 
     bytes = (const uint8_t *)&head->dense_f2_w[0];
     length = (uint32_t)(sizeof(head->dense_f2_w) + sizeof(head->dense_f2_b) +
-                        sizeof(head->dense_out_w) + sizeof(head->dense_out_b));
+                        sizeof(head->dense_out_w) + sizeof(head->dense_out_b) +
+                        sizeof(head->saved_record_label) +
+                        sizeof(head->saved_base_avg) +
+                        sizeof(head->saved_hold_avg) +
+                        sizeof(head->saved_record_raw));
     for (i = 0; i < length; i++) {
         checksum ^= bytes[i];
         checksum = (checksum << 1) | (checksum >> 31);
@@ -170,6 +191,10 @@ static void SIL_APP_TINYOL_LoadDefaultHead(void)
                                             sizeof(g_tinyol_head.dense_f2_b) +
                                             sizeof(g_tinyol_head.dense_out_w) +
                                             sizeof(g_tinyol_head.dense_out_b));
+    g_tinyol_head.saved_record_label = 0xFFFFU;
+    memset(g_tinyol_head.saved_base_avg, 0, sizeof(g_tinyol_head.saved_base_avg));
+    memset(g_tinyol_head.saved_hold_avg, 0, sizeof(g_tinyol_head.saved_hold_avg));
+    memset(g_tinyol_head.saved_record_raw, 0, sizeof(g_tinyol_head.saved_record_raw));
     g_tinyol_head.checksum = SIL_APP_TINYOL_HeadChecksum(&g_tinyol_head);
 }
 
@@ -391,6 +416,28 @@ static bool SIL_APP_TINYOL_BuildFeatureSampleFromTarget(uint16_t slot,
     return cnn_compute_features_from_window(window_5, g_tinyol.base_avg, g_tinyol.hold_avg, waveform, variance, mean);
 }
 
+static bool SIL_APP_TINYOL_BuildFeatureSampleFromSaved(float *waveform,
+                                                       float *variance,
+                                                       float *mean) {
+    uint16_t window_5[CNN_WIN_LEN][CNN_CH_USED];
+    uint16_t i;
+    uint16_t ch;
+    uint16_t start = g_tinyol.window_start_offset;
+
+    if (start + CNN_WIN_LEN > TINYOL_RECORD_MAX_SAMPLES) {
+        start = (uint16_t)(TINYOL_RECORD_MAX_SAMPLES - CNN_WIN_LEN);
+    }
+    if (g_tinyol_head.saved_record_label == 0xFFFFU || !g_tinyol_head_exists) {
+        return false;
+    }
+    for (i = 0; i < CNN_WIN_LEN; i++) {
+        for (ch = 0; ch < CNN_CH_USED; ch++) {
+            window_5[i][ch] = g_tinyol_head.saved_record_raw[start + i][ch];
+        }
+    }
+    return cnn_compute_features_from_window(window_5, g_tinyol_head.saved_base_avg, g_tinyol_head.saved_hold_avg, waveform, variance, mean);
+}
+
 static void SIL_APP_TINYOL_ClearGradients(void)
 {
     memset(g_tinyol_grad_f2_w, 0, sizeof(g_tinyol_grad_f2_w));
@@ -443,6 +490,56 @@ static void SIL_APP_TINYOL_AccumulateSampleGradients(const cnn_detect_cache_t *c
 
     for (k = 0; k < CNN_OUT_DIM; k++) {
         dz3[k] = cache->proba[k] - ((k == label) ? 1.0f : 0.0f);
+        g_tinyol_grad_out_b[k] += dz3[k];
+    }
+
+    for (j = 0; j < 64U; j++) {
+        float sum = 0.0f;
+        for (k = 0; k < CNN_OUT_DIM; k++) {
+            sum += dz3[k] * g_tinyol_head.dense_out_w[j * CNN_OUT_DIM + k];
+            g_tinyol_grad_out_w[j * CNN_OUT_DIM + k] += cache->f2_out[j] * dz3[k];
+        }
+        da2[j] = sum;
+        dz2[j] = (cache->f2_z[j] > 0.0f) ? da2[j] : (da2[j] * 0.1f);
+        g_tinyol_grad_f2_b[j] += dz2[j];
+    }
+
+    for (i = 0; i < 128U; i++) {
+        for (j = 0; j < 64U; j++) {
+            g_tinyol_grad_f2_w[i * 64U + j] += cache->f1_out[i] * dz2[j];
+        }
+    }
+}
+
+static void SIL_APP_TINYOL_ShuffleIndices(uint16_t *indices, uint16_t count)
+{
+    if (count <= 1U) {
+        return;
+    }
+    static uint32_t rand_state = 123456789U;
+    if (rand_state == 123456789U) {
+        rand_state += g_tinyol.timer_cnt + gsil_app_touch.sensor.count;
+    }
+    
+    for (uint16_t i = (uint16_t)(count - 1U); i > 0U; i--) {
+        rand_state = rand_state * 1103515245U + 12345U;
+        uint16_t j = (uint16_t)((rand_state / 65536U) % (i + 1U));
+        uint16_t temp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = temp;
+    }
+}
+
+static void SIL_APP_TINYOL_AccumulateSampleGradientsCustom(const cnn_detect_cache_t *cache,
+                                                           const float dz3[CNN_OUT_DIM])
+{
+    float da2[64];
+    float dz2[64];
+    uint32_t i;
+    uint32_t j;
+    uint32_t k;
+
+    for (k = 0; k < CNN_OUT_DIM; k++) {
         g_tinyol_grad_out_b[k] += dz3[k];
     }
 
@@ -1046,18 +1143,72 @@ void SIL_APP_TINYOL_StopRecording(void)
 
 fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
 {
-    uint16_t total_samples;
-    uint16_t default_samples;
+    g_train_sample_count = 0;
+    
+    /* 1. Load default replay data for non-target classes (subject to anchor_windows limits) */
+    for (uint16_t label = 0U; label < CNN_OUT_DIM; label++) {
+        if (label == g_tinyol.target_label) {
+            continue;
+        }
+        uint16_t limit = g_tinyol.anchor_windows;
+        uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount(label);
+        if (limit == 0 || limit > default_count) {
+            limit = default_count;
+        }
+        for (uint16_t i = 0U; i < limit; i++) {
+            if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
+                g_train_samples[g_train_sample_count].is_target = 0;
+                g_train_samples[g_train_sample_count].label = (uint8_t)label;
+                g_train_samples[g_train_sample_count].sample_idx = i;
+                g_train_indices[g_train_sample_count] = g_train_sample_count;
+                g_train_sample_count++;
+            }
+        }
+    }
 
-    if (g_tinyol.record_capture_count == 0U) {
+    /* 2. Load default replay data for target class */
+    {
+        uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount(g_tinyol.target_label);
+        for (uint16_t i = 0U; i < default_count; i++) {
+            if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
+                g_train_samples[g_train_sample_count].is_target = 0;
+                g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol.target_label;
+                g_train_samples[g_train_sample_count].sample_idx = i;
+                g_train_indices[g_train_sample_count] = g_train_sample_count;
+                g_train_sample_count++;
+            }
+        }
+    }
+
+    /* 3. Load target recorded data (both RAM targets and Flash golden gesture if they exist) */
+    uint16_t target_count = 0;
+    if (g_tinyol.record_capture_count > 0U) {
+        for (uint16_t slot = 0U; slot < g_tinyol.record_capture_count; slot++) {
+            if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
+                g_train_samples[g_train_sample_count].is_target = 1; // RAM target
+                g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol.target_label;
+                g_train_samples[g_train_sample_count].sample_idx = slot;
+                g_train_indices[g_train_sample_count] = g_train_sample_count;
+                g_train_sample_count++;
+                target_count++;
+            }
+        }
+    }
+    if (g_tinyol_head.saved_record_label == g_tinyol.target_label && g_tinyol_head_exists) {
+        if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
+            g_train_samples[g_train_sample_count].is_target = 2; // Flash target
+            g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol.target_label;
+            g_train_samples[g_train_sample_count].sample_idx = 0;
+            g_train_indices[g_train_sample_count] = g_train_sample_count;
+            g_train_sample_count++;
+            target_count++;
+        }
+    }
+
+    if (g_train_sample_count == 0U || target_count == 0U) {
         return FSP_ERR_INVALID_STATE;
     }
 
-    default_samples = 0U;
-    for (uint16_t label = 0U; label < CNN_OUT_DIM; label++) {
-        default_samples = (uint16_t)(default_samples + SIL_APP_TINYOL_GetDefaultWindowCount(label));
-    }
-    total_samples = (uint16_t)(default_samples + g_tinyol.record_capture_count);
     g_tinyol.replay_built = 1U;
     g_tinyol.replay_ready = 1U;
     g_tinyol.training_done = 0U;
@@ -1067,9 +1218,9 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
     {
         char msg[96];
         snprintf(msg, sizeof(msg), "TINYOL,REPLAY_BUILT,target=%u,default=%u,total=%u",
-                 (unsigned int)g_tinyol.record_capture_count,
-                 (unsigned int)default_samples,
-                 (unsigned int)total_samples);
+                 (unsigned int)target_count,
+                 (unsigned int)(g_train_sample_count - target_count),
+                 (unsigned int)g_train_sample_count);
         SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
     }
     return FSP_SUCCESS;
@@ -1112,111 +1263,89 @@ fsp_err_t SIL_APP_TINYOL_RunTraining(void)
     uint32_t train_total = 0U;
     uint32_t epoch;
 
-    if (!g_tinyol.replay_ready) {
+    if (!g_tinyol.replay_ready || g_train_sample_count == 0U) {
         return FSP_ERR_INVALID_STATE;
     }
 
-    SIL_APP_TINYOL_ClearGradients();
     for (epoch = 0U; epoch < g_tinyol.epochs; epoch++) {
-        uint32_t label;
-        uint16_t idx;
-        uint16_t sample_idx;
-        uint16_t local_batch = 0U;
         float epoch_loss = 0.0f;
         uint32_t epoch_correct = 0U;
         uint32_t epoch_total = 0U;
+        uint16_t local_batch = 0U;
 
+        /* A. Shuffle dataset indices at the start of each epoch */
+        SIL_APP_TINYOL_ShuffleIndices(g_train_indices, g_train_sample_count);
         SIL_APP_TINYOL_ClearGradients();
-        local_batch = 0U;
 
-        for (label = 0U; label < CNN_OUT_DIM; label++) {
-            uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount((uint16_t)label);
-            for (sample_idx = 0U; sample_idx < default_count; sample_idx++) {
-                float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
-                float variance[CNN_AUX_VAR_DIM];
-                float mean[CNN_AUX_VAR_DIM];
-                if (!SIL_APP_TINYOL_BuildFeatureSampleFromDefault((uint16_t)label, sample_idx, waveform, variance, mean)) {
-                    continue;
-                }
-                if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
-                    continue;
-                }
+        /* B. Forward pass and gradient accumulation based on shuffled indices */
+        for (uint16_t idx = 0U; idx < g_train_sample_count; idx++) {
+            uint16_t sample_pos = g_train_indices[idx];
+            sil_train_sample_t *sample = &g_train_samples[sample_pos];
+            
+            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+            float variance[CNN_AUX_VAR_DIM];
+            float mean[CNN_AUX_VAR_DIM];
+            bool success = false;
 
-                {
-                    float prob = cache.proba[label];
-                    if (prob < 1.0e-6f) {
-                        prob = 1.0e-6f;
-                    }
-                    epoch_loss += -logf(prob);
-                    train_loss += -logf(prob);
+            if (sample->is_target == 0) {
+                success = SIL_APP_TINYOL_BuildFeatureSampleFromDefault(sample->label, sample->sample_idx, waveform, variance, mean);
+            } else if (sample->is_target == 1) {
+                success = SIL_APP_TINYOL_BuildFeatureSampleFromTarget(sample->sample_idx, waveform, variance, mean);
+            } else if (sample->is_target == 2) {
+                success = SIL_APP_TINYOL_BuildFeatureSampleFromSaved(waveform, variance, mean);
+            }
+
+            if (!success) {
+                continue;
+            }
+
+            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                continue;
+            }
+
+            /* C. Calculate Loss with Label Smoothing alignment */
+            float label_smoothing = 0.03f; // Align with PC Label Smoothing (usually 0.03f)
+            float target_prob = 1.0f - label_smoothing + (label_smoothing / (float)CNN_OUT_DIM);
+            float other_prob = label_smoothing / (float)CNN_OUT_DIM;
+            
+            float prob = cache.proba[sample->label];
+            if (prob < 1.0e-6f) prob = 1.0e-6f;
+            epoch_loss += -logf(prob);
+            train_loss += -logf(prob);
+
+            epoch_total++;
+            train_total++;
+
+            /* Determine predicted class */
+            uint16_t best = 0U;
+            for (uint16_t idx_c = 1U; idx_c < CNN_OUT_DIM; idx_c++) {
+                if (cache.proba[idx_c] > cache.proba[best]) {
+                    best = idx_c;
                 }
-                epoch_total++;
-                train_total++;
-                {
-                    uint16_t best = 0U;
-                    for (idx = 1U; idx < CNN_OUT_DIM; idx++) {
-                        if (cache.proba[idx] > cache.proba[best]) {
-                            best = idx;
-                        }
-                    }
-                    if (best == label) {
-                        epoch_correct++;
-                        train_correct++;
-                    }
-                }
-                SIL_APP_TINYOL_AccumulateSampleGradients(&cache, (uint16_t)label);
-                local_batch++;
-                if (local_batch >= g_tinyol.batch_size) {
-                    SIL_APP_TINYOL_ApplyGradients(local_batch);
-                    local_batch = 0U;
-                }
+            }
+            if (best == sample->label) {
+                epoch_correct++;
+                train_correct++;
+            }
+
+            /* D. Accumulate gradients with Label Smoothing */
+            float dz3[CNN_OUT_DIM];
+            for (uint16_t k = 0U; k < CNN_OUT_DIM; k++) {
+                float target = (k == sample->label) ? target_prob : other_prob;
+                dz3[k] = cache.proba[k] - target;
+            }
+            
+            SIL_APP_TINYOL_AccumulateSampleGradientsCustom(&cache, dz3);
+
+            local_batch++;
+            if (local_batch >= g_tinyol.batch_size) {
+                SIL_APP_TINYOL_ApplyGradients(local_batch);
+                local_batch = 0U;
             }
         }
 
         if (local_batch > 0U) {
             SIL_APP_TINYOL_ApplyGradients(local_batch);
-        }
-
-        for (idx = 0U; idx < g_tinyol.record_capture_count; idx++) {
-            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
-            float variance[CNN_AUX_VAR_DIM];
-            float mean[CNN_AUX_VAR_DIM];
-
-            if (!SIL_APP_TINYOL_BuildFeatureSampleFromTarget(idx, waveform, variance, mean)) {
-                continue;
-            }
-            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
-                continue;
-            }
-            {
-                float prob = cache.proba[g_tinyol.target_label];
-                if (prob < 1.0e-6f) {
-                    prob = 1.0e-6f;
-                }
-                epoch_loss += -logf(prob);
-                train_loss += -logf(prob);
-                epoch_total++;
-                train_total++;
-            }
-            {
-                uint16_t best = 0U;
-                uint16_t best_idx;
-                for (best_idx = 1U; best_idx < CNN_OUT_DIM; best_idx++) {
-                    if (cache.proba[best_idx] > cache.proba[best]) {
-                        best = best_idx;
-                    }
-                }
-                if (best == g_tinyol.target_label) {
-                    epoch_correct++;
-                    train_correct++;
-                }
-            }
-            SIL_APP_TINYOL_AccumulateSampleGradients(&cache, g_tinyol.target_label);
-            local_batch++;
-            if ((local_batch >= g_tinyol.batch_size) || (idx == (g_tinyol.record_capture_count - 1U))) {
-                SIL_APP_TINYOL_ApplyGradients(local_batch);
-                local_batch = 0U;
-            }
         }
 
         g_tinyol.last_train_loss = (epoch_total > 0U) ? (epoch_loss / (float)epoch_total) : 0.0f;
@@ -1301,6 +1430,66 @@ fsp_err_t SIL_APP_TINYOL_RunValidation(void)
         }
     }
 
+    /* Validate target recorded data (both RAM targets and Flash golden gesture if they exist) */
+    if (g_tinyol.record_capture_count > 0U) {
+        for (idx = 0U; idx < g_tinyol.record_capture_count; idx++) {
+            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+            float variance[CNN_AUX_VAR_DIM];
+            float mean[CNN_AUX_VAR_DIM];
+            if (!SIL_APP_TINYOL_BuildFeatureSampleFromTarget(idx, waveform, variance, mean)) {
+                continue;
+            }
+            if (!cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                continue;
+            }
+            {
+                float prob = cache.proba[g_tinyol.target_label];
+                uint16_t best = 0U;
+                if (prob < 1.0e-6f) {
+                    prob = 1.0e-6f;
+                }
+                val_loss += -logf(prob);
+                val_total++;
+                for (uint16_t idx_c = 1U; idx_c < CNN_OUT_DIM; idx_c++) {
+                    if (cache.proba[idx_c] > cache.proba[best]) {
+                        best = idx_c;
+                    }
+                }
+                if (best == g_tinyol.target_label) {
+                    val_correct++;
+                    target_correct++;
+                }
+                target_total++;
+            }
+        }
+    }
+    if (g_tinyol_head.saved_record_label == g_tinyol.target_label && g_tinyol_head_exists) {
+        float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+        float variance[CNN_AUX_VAR_DIM];
+        float mean[CNN_AUX_VAR_DIM];
+        if (SIL_APP_TINYOL_BuildFeatureSampleFromSaved(waveform, variance, mean)) {
+            if (cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                float prob = cache.proba[g_tinyol.target_label];
+                uint16_t best = 0U;
+                if (prob < 1.0e-6f) {
+                    prob = 1.0e-6f;
+                }
+                val_loss += -logf(prob);
+                val_total++;
+                for (uint16_t idx_c = 1U; idx_c < CNN_OUT_DIM; idx_c++) {
+                    if (cache.proba[idx_c] > cache.proba[best]) {
+                        best = idx_c;
+                    }
+                }
+                if (best == g_tinyol.target_label) {
+                    val_correct++;
+                    target_correct++;
+                }
+                target_total++;
+            }
+        }
+    }
+
     g_tinyol.last_val_loss = (val_total > 0U) ? (val_loss / (float)val_total) : 0.0f;
     g_tinyol.last_val_acc = (val_total > 0U) ? ((float)val_correct / (float)val_total) : 0.0f;
     g_tinyol.last_target_recall = (target_total > 0U) ? ((float)target_correct / (float)target_total) : 0.0f;
@@ -1357,6 +1546,15 @@ fsp_err_t SIL_APP_TINYOL_SaveActiveHead(void)
     uint8_t prev_enabled;
 
     SIL_APP_TINYOL_EnsureHeadInitialized();
+    
+    /* Copy Golden Gesture Slot 0 & baseline calibration data to the active head structure */
+    if (g_tinyol.record_capture_count > 0) {
+        g_tinyol_head.saved_record_label = (uint32_t)g_tinyol.record_labels[0];
+        memcpy(g_tinyol_head.saved_base_avg, g_tinyol.base_avg, sizeof(g_tinyol_head.saved_base_avg));
+        memcpy(g_tinyol_head.saved_hold_avg, g_tinyol.hold_avg, sizeof(g_tinyol_head.saved_hold_avg));
+        memcpy(g_tinyol_head.saved_record_raw, g_tinyol.record_raw[0], sizeof(g_tinyol_head.saved_record_raw));
+    }
+
     prev_exists = g_tinyol_head.active_head_exists;
     prev_enabled = g_tinyol_head.active_weight_enabled;
     err = SIL_APP_TINYOL_ApplyActiveHeadToFlash();
@@ -1620,3 +1818,13 @@ const float *SIL_APP_TINYOL_GetDenseF2Weights(void) { SIL_APP_TINYOL_EnsureHeadI
 const float *SIL_APP_TINYOL_GetDenseF2Bias(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_f2_b; }
 const float *SIL_APP_TINYOL_GetDenseOutWeights(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_out_w; }
 const float *SIL_APP_TINYOL_GetDenseOutBias(void) { SIL_APP_TINYOL_EnsureHeadInitialized(); return g_tinyol_head.dense_out_b; }
+
+uint32_t SIL_APP_TINYOL_GetSavedRecordLabel(void) {
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    return g_tinyol_head.saved_record_label;
+}
+
+uint8_t SIL_APP_TINYOL_HasSavedRecord(void) {
+    SIL_APP_TINYOL_EnsureHeadInitialized();
+    return (g_tinyol_head_exists && g_tinyol_head.saved_record_label != 0xFFFFU) ? 1U : 0U;
+}

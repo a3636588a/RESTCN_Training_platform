@@ -127,6 +127,8 @@ uint8_t SIL_APP_TINYOL_IsResultReady(void);
 uint8_t SIL_APP_TINYOL_IsValidationPassed(void);
 uint8_t SIL_APP_TINYOL_HasActiveHead(void);
 uint8_t SIL_APP_TINYOL_IsActiveHeadEnabled(void);
+uint32_t SIL_APP_TINYOL_GetSavedRecordLabel(void);
+uint8_t SIL_APP_TINYOL_HasSavedRecord(void);
 uint32_t SIL_APP_TINYOL_GetActiveWeightSlot(void);
 uint32_t SIL_APP_TINYOL_GetActiveHeadVersion(void);
 uint32_t SIL_APP_TINYOL_GetActiveHeadChecksum(void);

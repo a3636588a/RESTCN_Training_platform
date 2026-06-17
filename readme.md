@@ -412,3 +412,18 @@ MCU 匯出：
 
 ### 12.3 TinyOL UI 操作流程優化 (Step 化)
 * **自動流程對齊**：重整了 TinyOL 頁面的 UI 設計，將「校正、讀取資訊、手勢錄製、Replay 構建、訓練/驗證、快閃記憶體寫入/回滾」等操作整理成 Step 化的引導流程，並與板端的 board-like 即時互動狀態機完全對齊。
+
+---
+
+## 13. 黃金手勢 Flash 儲存與訓練打亂/載入機制優化記錄
+
+為了在板端實現真正的 Golden Gesture 閉環微調訓練，我們實作了以下兩大核心優化：
+
+### 13.1 黃金手勢的 Code Flash 儲存與特徵還原
+* **黃金手勢快閃記憶體儲存**：擴展 `sil_app_tinyol_head_flash_s` 結構體，新增 `saved_record_label`、`saved_base_avg`、`saved_hold_avg` 與 `saved_record_raw` 欄位。在儲存 Active Head (`SIL_APP_TINYOL_SaveActiveHead`) 時，將第一筆 (Slot 0) 的原始錄製手勢與校正基準一併寫入 Code Flash。
+* **特徵提取與還原**：實作 `SIL_APP_TINYOL_BuildFeatureSampleFromSaved`，在重開機且 RAM 中無錄製手勢時，能直接利用 Flash 中儲存的手勢原始數據，配合寫入時儲存的校正基準 (saved_base_avg / saved_hold_avg) 還原出正確的歸一化特徵。
+* **校驗和與預設值對齊**：更新 `SIL_APP_TINYOL_HeadChecksum` 計算公式以包含新增的手勢儲存欄位，並在 `SIL_APP_TINYOL_LoadDefaultHead` 中初始化手勢資料，確保快閃記憶體資料校驗之安全性。
+
+### 13.2 訓練與 Replay 打亂機制 (Shuffling Mechanism) 及載入策略優化
+* **Replay Shuffling (Fisher-Yates)**：實作 `SIL_APP_TINYOL_ShuffleIndices`（基於 Fisher-Yates 算法與硬體隨機因子種子），並於每個 Epoch 開始前打亂訓練樣本索引，避免模型產生嚴重的類別順序偏見 (Class Bias)，使訓練收斂更加穩定。
+* **Replay 載入策略優化 (Flash 黃金手勢拉入)**：重構 `SIL_APP_TINYOL_BuildReplay` 與 `SIL_APP_TINYOL_RunValidation`，將 exclusive 'else if' 改為 inclusive 載入。使板端在進行微調訓練時，能**同時**把 RAM 中新錄製的 Target 手勢與 Flash 中儲存的黃金手勢一併拉進來做 Replay 訓練與 Validation 驗證，實現持續的累積式學習。
