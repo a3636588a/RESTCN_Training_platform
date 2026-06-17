@@ -1567,12 +1567,20 @@ fsp_err_t SIL_APP_TINYOL_SaveActiveHead(void)
         }
         int32_t flash_free = (int32_t)(TINYOL_ACTIVE_HEAD_FLASH_SIZE - head_size);
         
-        snprintf(msg, sizeof(msg), "TINYOL,SAVE_INFO,head_size=%lu,data_size=%lu,label=%lu(%s),flash_free=%ld",
-                 (unsigned long)head_size,
-                 (unsigned long)data_size,
-                 (unsigned long)label,
-                 name,
-                 (long)flash_free);
+        uint32_t head_kb_int = head_size / 1024U;
+        uint32_t head_kb_frac = ((head_size * 100U) / 1024U) % 100U;
+        
+        uint32_t data_kb_int = data_size / 1024U;
+        uint32_t data_kb_frac = ((data_size * 100U) / 1024U) % 100U;
+        
+        uint32_t free_kb_int = (uint32_t)flash_free / 1024U;
+        uint32_t free_kb_frac = (((uint32_t)flash_free * 100U) / 1024U) % 100U;
+        
+        snprintf(msg, sizeof(msg), "TINYOL,SAVE_INFO,head_kb=%lu.%02lu,data_kb=%lu.%02lu,label=%lu(%s),free_kb=%lu.%02lu",
+                 (unsigned long)head_kb_int, (unsigned long)head_kb_frac,
+                 (unsigned long)data_kb_int, (unsigned long)data_kb_frac,
+                 (unsigned long)label, name,
+                 (unsigned long)free_kb_int, (unsigned long)free_kb_frac);
         SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
         SIL_UART_DTC_FlushWriteBuffer(&gsil_uart_topc);
     }
