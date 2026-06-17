@@ -1555,6 +1555,28 @@ fsp_err_t SIL_APP_TINYOL_SaveActiveHead(void)
         memcpy(g_tinyol_head.saved_record_raw, g_tinyol.record_raw[0], sizeof(g_tinyol_head.saved_record_raw));
     }
 
+    /* Notify size and content information via UART before writing to Code Flash */
+    {
+        char msg[160];
+        uint32_t head_size = (uint32_t)sizeof(g_tinyol_head);
+        uint32_t data_size = (uint32_t)sizeof(g_tinyol_head.saved_record_raw);
+        uint32_t label = g_tinyol_head.saved_record_label;
+        const char *name = "NONE";
+        if (label < CNN_OUT_DIM) {
+            name = CNN_GESTURE_NAMES[label];
+        }
+        int32_t flash_free = (int32_t)(TINYOL_ACTIVE_HEAD_FLASH_SIZE - head_size);
+        
+        snprintf(msg, sizeof(msg), "TINYOL,SAVE_INFO,head_size=%lu,data_size=%lu,label=%lu(%s),flash_free=%ld",
+                 (unsigned long)head_size,
+                 (unsigned long)data_size,
+                 (unsigned long)label,
+                 name,
+                 (long)flash_free);
+        SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
+        SIL_UART_DTC_FlushWriteBuffer(&gsil_uart_topc);
+    }
+
     prev_exists = g_tinyol_head.active_head_exists;
     prev_enabled = g_tinyol_head.active_weight_enabled;
     err = SIL_APP_TINYOL_ApplyActiveHeadToFlash();
