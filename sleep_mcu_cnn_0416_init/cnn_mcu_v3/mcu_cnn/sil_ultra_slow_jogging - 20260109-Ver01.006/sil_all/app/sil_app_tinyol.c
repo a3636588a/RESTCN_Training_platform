@@ -34,6 +34,15 @@ static sil_app_tinyol_s g_tinyol = {0};
 #define TINYOL_FLASHTEST_BUFFER_MAX 32768U
 #define TINYOL_FLASHTEST_TEXT "TINYOL_NEXT_BLOCK_TEST"
 
+#define TINYOL_MAX_SAVED_GESTURES 16U
+
+typedef struct {
+    uint32_t label;
+    uint16_t base_avg[6];
+    uint16_t hold_avg[6];
+    uint16_t record_raw[TINYOL_RECORD_MAX_SAMPLES][TINYOL_RECORD_CHS];
+} sil_app_tinyol_saved_gesture_s;
+
 typedef struct SIL_APP_TINYOL_HEAD_FLASH_S {
     uint32_t magic;
     uint32_t head_version;
@@ -52,10 +61,8 @@ typedef struct SIL_APP_TINYOL_HEAD_FLASH_S {
     float dense_out_b[TINYOL_HEAD_OUT_B_COUNT];
     
     /* Golden gesture storage fields */
-    uint32_t saved_record_label;
-    uint16_t saved_base_avg[6];
-    uint16_t saved_hold_avg[6];
-    uint16_t saved_record_raw[TINYOL_RECORD_MAX_SAMPLES][TINYOL_RECORD_CHS];
+    uint32_t saved_gesture_count;
+    sil_app_tinyol_saved_gesture_s saved_gestures[TINYOL_MAX_SAVED_GESTURES];
 } sil_app_tinyol_head_flash_s;
 
 static sil_app_tinyol_head_flash_s g_tinyol_head = {0};
@@ -161,10 +168,8 @@ static uint32_t SIL_APP_TINYOL_HeadChecksum(const sil_app_tinyol_head_flash_s *h
     bytes = (const uint8_t *)&head->dense_f2_w[0];
     length = (uint32_t)(sizeof(head->dense_f2_w) + sizeof(head->dense_f2_b) +
                         sizeof(head->dense_out_w) + sizeof(head->dense_out_b) +
-                        sizeof(head->saved_record_label) +
-                        sizeof(head->saved_base_avg) +
-                        sizeof(head->saved_hold_avg) +
-                        sizeof(head->saved_record_raw));
+                        sizeof(head->saved_gesture_count) +
+                        sizeof(head->saved_gestures));
     for (i = 0; i < length; i++) {
         checksum ^= bytes[i];
         checksum = (checksum << 1) | (checksum >> 31);
@@ -191,10 +196,8 @@ static void SIL_APP_TINYOL_LoadDefaultHead(void)
                                             sizeof(g_tinyol_head.dense_f2_b) +
                                             sizeof(g_tinyol_head.dense_out_w) +
                                             sizeof(g_tinyol_head.dense_out_b));
-    g_tinyol_head.saved_record_label = 0xFFFFU;
-    memset(g_tinyol_head.saved_base_avg, 0, sizeof(g_tinyol_head.saved_base_avg));
-    memset(g_tinyol_head.saved_hold_avg, 0, sizeof(g_tinyol_head.saved_hold_avg));
-    memset(g_tinyol_head.saved_record_raw, 0, sizeof(g_tinyol_head.saved_record_raw));
+    g_tinyol_head.saved_gesture_count = 0U;
+    memset(g_tinyol_head.saved_gestures, 0, sizeof(g_tinyol_head.saved_gestures));
     g_tinyol_head.checksum = SIL_APP_TINYOL_HeadChecksum(&g_tinyol_head);
 }
 
@@ -416,7 +419,8 @@ static bool SIL_APP_TINYOL_BuildFeatureSampleFromTarget(uint16_t slot,
     return cnn_compute_features_from_window(window_5, g_tinyol.base_avg, g_tinyol.hold_avg, waveform, variance, mean);
 }
 
-static bool SIL_APP_TINYOL_BuildFeatureSampleFromSaved(float *waveform,
+static bool SIL_APP_TINYOL_BuildFeatureSampleFromSaved(uint32_t idx,
+                                                       float *waveform,
                                                        float *variance,
                                                        float *mean) {
     uint16_t window_5[CNN_WIN_LEN][CNN_CH_USED];
@@ -427,15 +431,15 @@ static bool SIL_APP_TINYOL_BuildFeatureSampleFromSaved(float *waveform,
     if (start + CNN_WIN_LEN > TINYOL_RECORD_MAX_SAMPLES) {
         start = (uint16_t)(TINYOL_RECORD_MAX_SAMPLES - CNN_WIN_LEN);
     }
-    if (g_tinyol_head.saved_record_label == 0xFFFFU || !g_tinyol_head_exists) {
+    if (!g_tinyol_head_exists || idx >= g_tinyol_head.saved_gesture_count) {
         return false;
     }
     for (i = 0; i < CNN_WIN_LEN; i++) {
         for (ch = 0; ch < CNN_CH_USED; ch++) {
-            window_5[i][ch] = g_tinyol_head.saved_record_raw[start + i][ch];
+            window_5[i][ch] = g_tinyol_head.saved_gestures[idx].record_raw[start + i][ch];
         }
     }
-    return cnn_compute_features_from_window(window_5, g_tinyol_head.saved_base_avg, g_tinyol_head.saved_hold_avg, waveform, variance, mean);
+    return cnn_compute_features_from_window(window_5, g_tinyol_head.saved_gestures[idx].base_avg, g_tinyol_head.saved_gestures[idx].hold_avg, waveform, variance, mean);
 }
 
 static void SIL_APP_TINYOL_ClearGradients(void)
@@ -815,7 +819,7 @@ fsp_err_t SIL_APP_TINYOL_Enter1(void)
     g_tinyol.learning_rate = 0.0005f;
     g_tinyol.confusable_count = 3;
     g_tinyol.confusable_windows = 8;
-    g_tinyol.anchor_windows = 2;
+    g_tinyol.anchor_windows = 3;
     g_tinyol.handshake_sent = 0;
     g_tinyol.recalibration_requested = 0;
     g_tinyol.calibration_active = 0;
@@ -1182,7 +1186,7 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
         }
     }
 
-    /* 3. Load target recorded data (both RAM targets and Flash golden gesture if they exist) */
+    /* 3. Load target recorded data (both RAM targets and Flash golden gestures if they exist) */
     uint16_t target_count = 0;
     if (g_tinyol.record_capture_count > 0U) {
         for (uint16_t slot = 0U; slot < g_tinyol.record_capture_count; slot++) {
@@ -1196,15 +1200,17 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
             }
         }
     }
-    if (g_tinyol_head.saved_record_label != 0xFFFFU && g_tinyol_head_exists) {
-        if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
-            g_train_samples[g_train_sample_count].is_target = 2; // Flash golden gesture
-            g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol_head.saved_record_label;
-            g_train_samples[g_train_sample_count].sample_idx = 0;
-            g_train_indices[g_train_sample_count] = g_train_sample_count;
-            g_train_sample_count++;
-            if (g_tinyol_head.saved_record_label == g_tinyol.target_label) {
-                target_count++;
+    if (g_tinyol_head_exists && g_tinyol_head.saved_gesture_count > 0U) {
+        for (uint32_t i = 0U; i < g_tinyol_head.saved_gesture_count; i++) {
+            if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
+                g_train_samples[g_train_sample_count].is_target = 2; // Flash golden gesture
+                g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol_head.saved_gestures[i].label;
+                g_train_samples[g_train_sample_count].sample_idx = (uint16_t)i;
+                g_train_indices[g_train_sample_count] = g_train_sample_count;
+                g_train_sample_count++;
+                if (g_tinyol_head.saved_gestures[i].label == g_tinyol.target_label) {
+                    target_count++;
+                }
             }
         }
     }
@@ -1296,7 +1302,7 @@ fsp_err_t SIL_APP_TINYOL_RunTraining(void)
             } else if (sample->is_target == 1) {
                 success = SIL_APP_TINYOL_BuildFeatureSampleFromTarget(sample->sample_idx, waveform, variance, mean);
             } else if (sample->is_target == 2) {
-                success = SIL_APP_TINYOL_BuildFeatureSampleFromSaved(waveform, variance, mean);
+                success = SIL_APP_TINYOL_BuildFeatureSampleFromSaved(sample->sample_idx, waveform, variance, mean);
             }
 
             if (!success) {
@@ -1467,32 +1473,34 @@ fsp_err_t SIL_APP_TINYOL_RunValidation(void)
             }
         }
     }
-    if (g_tinyol_head.saved_record_label != 0xFFFFU && g_tinyol_head_exists) {
-        float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
-        float variance[CNN_AUX_VAR_DIM];
-        float mean[CNN_AUX_VAR_DIM];
-        if (SIL_APP_TINYOL_BuildFeatureSampleFromSaved(waveform, variance, mean)) {
-            if (cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
-                uint32_t true_label = g_tinyol_head.saved_record_label;
-                float prob = cache.proba[true_label];
-                uint16_t best = 0U;
-                if (prob < 1.0e-6f) {
-                    prob = 1.0e-6f;
-                }
-                val_loss += -logf(prob);
-                val_total++;
-                for (uint16_t idx_c = 1U; idx_c < CNN_OUT_DIM; idx_c++) {
-                    if (cache.proba[idx_c] > cache.proba[best]) {
-                        best = idx_c;
+    if (g_tinyol_head_exists && g_tinyol_head.saved_gesture_count > 0U) {
+        for (uint32_t s_idx = 0U; s_idx < g_tinyol_head.saved_gesture_count; s_idx++) {
+            float waveform[CNN_WIN_LEN * CNN_INPUT_CH_TOTAL];
+            float variance[CNN_AUX_VAR_DIM];
+            float mean[CNN_AUX_VAR_DIM];
+            if (SIL_APP_TINYOL_BuildFeatureSampleFromSaved(s_idx, waveform, variance, mean)) {
+                if (cnn_detect_forward_cache(waveform, variance, mean, &cache)) {
+                    uint32_t true_label = g_tinyol_head.saved_gestures[s_idx].label;
+                    float prob = cache.proba[true_label];
+                    uint16_t best = 0U;
+                    if (prob < 1.0e-6f) {
+                        prob = 1.0e-6f;
                     }
-                }
-                if (best == true_label) {
-                    val_correct++;
-                }
-                if (true_label == g_tinyol.target_label) {
-                    target_total++;
+                    val_loss += -logf(prob);
+                    val_total++;
+                    for (uint16_t idx_c = 1U; idx_c < CNN_OUT_DIM; idx_c++) {
+                        if (cache.proba[idx_c] > cache.proba[best]) {
+                            best = idx_c;
+                        }
+                    }
                     if (best == true_label) {
-                        target_correct++;
+                        val_correct++;
+                    }
+                    if (true_label == g_tinyol.target_label) {
+                        target_total++;
+                        if (best == true_label) {
+                            target_correct++;
+                        }
                     }
                 }
             }
@@ -1556,20 +1564,25 @@ fsp_err_t SIL_APP_TINYOL_SaveActiveHead(void)
 
     SIL_APP_TINYOL_EnsureHeadInitialized();
     
-    /* Copy Golden Gesture Slot 0 & baseline calibration data to the active head structure */
+    /* 每輪只將新錄製手勢中的第 1 筆 (Slot 0) 追加存入 Flash */
     if (g_tinyol.record_capture_count > 0) {
-        g_tinyol_head.saved_record_label = (uint32_t)g_tinyol.record_labels[0];
-        memcpy(g_tinyol_head.saved_base_avg, g_tinyol.base_avg, sizeof(g_tinyol_head.saved_base_avg));
-        memcpy(g_tinyol_head.saved_hold_avg, g_tinyol.hold_avg, sizeof(g_tinyol_head.saved_hold_avg));
-        memcpy(g_tinyol_head.saved_record_raw, g_tinyol.record_raw[0], sizeof(g_tinyol_head.saved_record_raw));
+        if (g_tinyol_head.saved_gesture_count < TINYOL_MAX_SAVED_GESTURES) {
+            uint32_t idx = g_tinyol_head.saved_gesture_count;
+            g_tinyol_head.saved_gestures[idx].label = (uint32_t)g_tinyol.record_labels[0];
+            memcpy(g_tinyol_head.saved_gestures[idx].base_avg, g_tinyol.base_avg, sizeof(g_tinyol_head.saved_gestures[idx].base_avg));
+            memcpy(g_tinyol_head.saved_gestures[idx].hold_avg, g_tinyol.hold_avg, sizeof(g_tinyol_head.saved_gestures[idx].hold_avg));
+            memcpy(g_tinyol_head.saved_gestures[idx].record_raw, g_tinyol.record_raw[0], sizeof(g_tinyol_head.saved_gestures[idx].record_raw));
+            g_tinyol_head.saved_gesture_count++;
+        }
     }
 
     /* Notify size and content information via UART before writing to Code Flash */
     {
         char msg[160];
         uint32_t head_size = (uint32_t)sizeof(g_tinyol_head);
-        uint32_t data_size = (uint32_t)sizeof(g_tinyol_head.saved_record_raw);
-        uint32_t label = g_tinyol_head.saved_record_label;
+        uint32_t data_size = (uint32_t)sizeof(g_tinyol_head.saved_gestures);
+        uint32_t count = g_tinyol_head.saved_gesture_count;
+        uint32_t label = (count > 0U) ? g_tinyol_head.saved_gestures[count - 1U].label : 0xFFFFU;
         const char *name = "NONE";
         if (label < CNN_OUT_DIM) {
             name = CNN_GESTURE_NAMES[label];
@@ -1585,17 +1598,18 @@ fsp_err_t SIL_APP_TINYOL_SaveActiveHead(void)
         uint32_t free_kb_int = (uint32_t)flash_free / 1024U;
         uint32_t free_kb_frac = (((uint32_t)flash_free * 100U) / 1024U) % 100U;
         
-        snprintf(msg, sizeof(msg), "TINYOL,SAVE_INFO,head_kb=%lu.%02lu,data_kb=%lu.%02lu,label=%lu(%s),free_kb=%lu.%02lu",
+        snprintf(msg, sizeof(msg), "TINYOL,SAVE_INFO,head_kb=%lu.%02lu,data_kb=%lu.%02lu,label=%lu(%s),free_kb=%lu.%02lu,count=%lu",
                  (unsigned long)head_kb_int, (unsigned long)head_kb_frac,
                  (unsigned long)data_kb_int, (unsigned long)data_kb_frac,
                  (unsigned long)label, name,
-                 (unsigned long)free_kb_int, (unsigned long)free_kb_frac);
+                 (unsigned long)free_kb_int, (unsigned long)free_kb_frac,
+                 (unsigned long)count);
         SIL_ATCMDS_SendSilNotify(ATCMDS_IO_TOPC, msg);
         SIL_UART_DTC_FlushWriteBuffer(&gsil_uart_topc);
     }
 
-    prev_exists = g_tinyol_head.active_head_exists;
-    prev_enabled = g_tinyol_head.active_weight_enabled;
+    prev_exists = (uint8_t)g_tinyol_head.active_head_exists;
+    prev_enabled = (uint8_t)g_tinyol_head.active_weight_enabled;
     err = SIL_APP_TINYOL_ApplyActiveHeadToFlash();
     if (err == FSP_SUCCESS) {
         g_tinyol_head.active_head_exists = 1U;
@@ -1864,10 +1878,10 @@ const float *SIL_APP_TINYOL_GetDenseOutBias(void) { SIL_APP_TINYOL_EnsureHeadIni
 
 uint32_t SIL_APP_TINYOL_GetSavedRecordLabel(void) {
     SIL_APP_TINYOL_EnsureHeadInitialized();
-    return g_tinyol_head.saved_record_label;
+    return (g_tinyol_head.saved_gesture_count > 0U) ? g_tinyol_head.saved_gestures[g_tinyol_head.saved_gesture_count - 1U].label : 0xFFFFU;
 }
 
 uint8_t SIL_APP_TINYOL_HasSavedRecord(void) {
     SIL_APP_TINYOL_EnsureHeadInitialized();
-    return (g_tinyol_head_exists && g_tinyol_head.saved_record_label != 0xFFFFU) ? 1U : 0U;
+    return (g_tinyol_head_exists && g_tinyol_head.saved_gesture_count > 0U) ? 1U : 0U;
 }
