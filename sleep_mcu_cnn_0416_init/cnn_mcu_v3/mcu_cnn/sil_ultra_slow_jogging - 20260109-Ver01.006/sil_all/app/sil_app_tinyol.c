@@ -737,7 +737,9 @@ static fsp_err_t SIL_APP_TINYOL_ApplyActiveHeadToFlash(void)
             }
             memcpy(chunk, &src[offset], copy_bytes);
         }
-        SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_START", write_addr, write_block_size, copy_bytes);
+        if ((offset % 4096U) == 0U) {
+            SIL_APP_TINYOL_SendFlashOpTrace("APPLY_WRITE_START", write_addr, write_block_size, copy_bytes);
+        }
         g_tinyol_flash_write_done = 0U;
         __disable_irq();
         err = g_flash0.p_api->write(g_flash0.p_ctrl, (uint32_t)chunk, write_addr, write_block_size);
@@ -1762,7 +1764,9 @@ fsp_err_t SIL_APP_TINYOL_RunFlashBlockTest(void)
             }
             memcpy(chunk, &g_tinyol_flashtest_write_buf[offset], write_len);
         }
-        SIL_APP_TINYOL_SendFlashTestTrace("WRITE_START", test_addr + offset, write_block_size, FSP_SUCCESS);
+        if ((offset % 4096U) == 0U) {
+            SIL_APP_TINYOL_SendFlashTestTrace("WRITE_START", test_addr + offset, write_block_size, FSP_SUCCESS);
+        }
         __disable_irq();
         err = R_FLASH_HP_Write(&g_flash0_ctrl,
                                (uint32_t)chunk,
@@ -1776,7 +1780,9 @@ fsp_err_t SIL_APP_TINYOL_RunFlashBlockTest(void)
             g_tinyol_flash_op_active = 0U;
             return err;
         }
-        SIL_APP_TINYOL_SendFlashTestTrace("WRITE_DONE", test_addr + offset, write_block_size, FSP_SUCCESS);
+        if ((offset % 4096U) == 0U) {
+            SIL_APP_TINYOL_SendFlashTestTrace("WRITE_DONE", test_addr + offset, write_block_size, FSP_SUCCESS);
+        }
     }
 
     if (memcmp((const void *)(uintptr_t)test_addr,
