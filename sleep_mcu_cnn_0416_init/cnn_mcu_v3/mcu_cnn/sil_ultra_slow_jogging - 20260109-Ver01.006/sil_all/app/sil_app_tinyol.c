@@ -1174,8 +1174,12 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
 
     /* 2. Load default replay data for target class */
     {
+        uint16_t limit = g_tinyol.anchor_windows;
         uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount(g_tinyol.target_label);
-        for (uint16_t i = 0U; i < default_count; i++) {
+        if (limit == 0 || limit > default_count) {
+            limit = default_count;
+        }
+        for (uint16_t i = 0U; i < limit; i++) {
             if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
                 g_train_samples[g_train_sample_count].is_target = 0;
                 g_train_samples[g_train_sample_count].label = (uint8_t)g_tinyol.target_label;
