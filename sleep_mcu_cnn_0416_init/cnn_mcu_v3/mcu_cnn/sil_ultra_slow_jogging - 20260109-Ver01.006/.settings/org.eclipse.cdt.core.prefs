@@ -1,3 +1,8 @@
+doxygen/doxygen_new_line_after_brief=true
+doxygen/doxygen_use_brief_tag=false
+doxygen/doxygen_use_javadoc_tags=true
+doxygen/doxygen_use_pre_tag=false
+doxygen/doxygen_use_structural_commands=false
 eclipse.preferences.version=1
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_APP_BIN_CONVERTER/delimiter=;
 environment/project/com.renesas.cdt.managedbuild.gnuarm.config.elf.debug.1324013157/MCUBOOT_APP_BIN_CONVERTER/operation=replace

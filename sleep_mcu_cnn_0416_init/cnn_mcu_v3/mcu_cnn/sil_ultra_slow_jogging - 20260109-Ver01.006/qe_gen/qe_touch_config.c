@@ -28,7 +28,7 @@
 ***********************************************************************************************************************/
 /***********************************************************************************************************************
 * Touch I/F Configuration File  : l_ultra_slow_jogging.tifcfg
-* Tuning Log File               : l_ultra_slow_jogging_log_tuning20260611133942.log
+* Tuning Log File               : l_ultra_slow_jogging_log_tuning20260617163113.log
 ***********************************************************************************************************************/
 
 #include "qe_touch_config.h"
@@ -59,11 +59,11 @@ CTSU Related Information for [CONFIG01] configuration.
 
 const ctsu_element_cfg_t g_qe_ctsu_element_cfg_config01[] =
 {
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x08F, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x095, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x09B, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x09F, .snum = 0x00, .sdpa = 0x18 },
+    { .ssdiv = CTSU_SSDIV_0500, .so = 0x09E, .snum = 0x00, .sdpa = 0x18 },
     { .ssdiv = CTSU_SSDIV_0500, .so = 0x098, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x099, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x090, .snum = 0x00, .sdpa = 0x18 },
-    { .ssdiv = CTSU_SSDIV_0500, .so = 0x090, .snum = 0x00, .sdpa = 0x18 },
     { .ssdiv = CTSU_SSDIV_2000, .so = 0x04C, .snum = 0x07, .sdpa = 0x03 },
 };
 
@@ -143,38 +143,38 @@ const touch_button_cfg_t g_qe_touch_button_cfg_config01[] =
     /* button00 */
     {
         .elem_index = 0,
-        .threshold  = 1351,
-        .hysteresis = 67,
+        .threshold  = 33,
+        .hysteresis = 1,
     },
     /* button01 */
     {
         .elem_index = 1,
-        .threshold  = 940,
-        .hysteresis = 47,
+        .threshold  = 65535,
+        .hysteresis = 3276,
     },
     /* button02 */
     {
         .elem_index = 2,
-        .threshold  = 687,
-        .hysteresis = 34,
+        .threshold  = 154,
+        .hysteresis = 7,
     },
     /* button03 */
     {
         .elem_index = 3,
-        .threshold  = 1194,
-        .hysteresis = 59,
+        .threshold  = 43,
+        .hysteresis = 2,
     },
     /* button04 */
     {
         .elem_index = 4,
-        .threshold  = 1140,
-        .hysteresis = 57,
+        .threshold  = 5,
+        .hysteresis = 0,
     },
     /* button05 */
     {
         .elem_index = 5,
-        .threshold  = 31,
-        .hysteresis = 1,
+        .threshold  = 65535,
+        .hysteresis = 3276,
     },
 };
 #endif

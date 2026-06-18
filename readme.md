@@ -427,3 +427,21 @@ MCU 匯出：
 ### 13.2 訓練與 Replay 打亂機制 (Shuffling Mechanism) 及載入策略優化
 * **Replay Shuffling (Fisher-Yates)**：實作 `SIL_APP_TINYOL_ShuffleIndices`（基於 Fisher-Yates 算法與硬體隨機因子種子），並於每個 Epoch 開始前打亂訓練樣本索引，避免模型產生嚴重的類別順序偏見 (Class Bias)，使訓練收斂更加穩定。
 * **Replay 載入策略優化 (Flash 黃金手勢拉入)**：重構 `SIL_APP_TINYOL_BuildReplay` 與 `SIL_APP_TINYOL_RunValidation`，將 exclusive 'else if' 改為 inclusive 載入。使板端在進行微調訓練時，能**同時**把 RAM 中新錄製的 Target 手勢與 Flash 中儲存的黃金手勢一併拉進來做 Replay 訓練與 Validation 驗證，實現持續的累積式學習。
+
+---
+
+## 14. 16類別架構相容優化與板端 Stack Overflow 當機 Bug 修正記錄
+
+為了在 16 類別的大模型配置下確保板端執行之穩定性與訓練精準度，本次進行了以下關鍵的程式碼重構與 Bug 修正：
+
+### 14.1 修正 62.6 KB 局部變數導致的板端 Stack Overflow 當機 (重大 Bug)
+* **問題**：在 `sil_app_tinyol.c` 中的 `SIL_APP_TINYOL_ReadActiveHeadFromFlash` 原先宣告了一個局部變數 `sil_app_tinyol_head_flash_s temp;`。在 16 類別的配置下，該結構體大小膨脹至 **62.6 KB**，而系統的 Stack 總限制大小僅為 **64 KB**。當進入該函數時，Stack 指針會直接溢出並踩爛其他全域變數或 OS 控制區，100% 觸發 `HardFault` 導致板端開機即卡死，UART 無任何輸出。
+* **修正**：移除了 Stack 上的 `temp` 大結構。改為直接透過 Flash 的唯讀指標 `stored` 原地進行 magic number 驗證與 Checksum 計算。驗證通過後，才直接 `memcpy` 到全域變數 `g_tinyol_head` 之中。使此函數的 Stack 空間額外開銷降為 **0**，徹底解決了開機卡死的 Stack 漏洞。
+
+### 14.2 擴展預設數據庫開關函數以相容 16 類別
+* **問題**：在 `sil_app_tinyol.c` 中，`GetDefaultWindowSet`、`GetDefaultWindowCount`、`GetDefaultBase` 與 `GetDefaultHold` 這四個讀取預設基準資料的 switch-case 輔助函數，其分支原本只寫到 `case 6`。這導致 16 類別下大於 6 的新類別（如手勢 10），在調用時會全部流入 `default` 分支而讀取成 class 0 的資料，造成線上學習特徵錯亂、無法收斂且驗證失敗。
+* **修正**：將這四個函數的分支完整擴展至 `case 0` ~ `case 15`，以完全相容 16 個手勢類別。
+
+### 14.3 調整 Default Replay 載入上限限制
+* **問題**：原先 `BuildReplay` 時的 default data 載入上限受限於 PC 端設定的 `anchor_windows`（例如 2 筆），對於 16 類別而言，對抗用的負樣本數量過少。但若全部載入（共 90 筆）又會讓總樣本數偏高，拉長微控制器的訓練時間。
+* **修正**：在 `BuildReplay` 中修改預設加載上限，將其限制為**每個類別最多載入 3 筆 default 視窗**。既能保證 16 分類時負樣本的對抗多樣性，又能將總訓練樣本限制在 51~53 筆左右，大幅平衡了訓練精準度與 MCU 的運算效能。

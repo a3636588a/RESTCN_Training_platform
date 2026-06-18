@@ -140,24 +140,66 @@
       <MethodID>0</MethodID>
       <TouchIFID>0</TouchIFID>
       <TouchIFType>1</TouchIFType>
-      <Capacitance>61.309105</Capacitance>
+      <Capacitance>62.97568</Capacitance>
       <DrivePulseFrequency>0.5</DrivePulseFrequency>
-      <Threshold>1351</Threshold>
-      <Hysteresis>67</Hysteresis>
+      <Threshold>33</Threshold>
+      <Hysteresis>1</Hysteresis>
       <ScanTime>0.526</ScanTime>
       <CTSUSSDIV>7</CTSUSSDIV>
       <CTSUSNUM>0</CTSUSNUM>
-      <CTSUSO>143</CTSUSO>
+      <CTSUSO>149</CTSUSO>
       <CTSUSDPA>24</CTSUSDPA>
     </TunedData>
     <TunedData>
       <MethodID>0</MethodID>
       <TouchIFID>1</TouchIFID>
       <TouchIFType>1</TouchIFType>
-      <Capacitance>63.85283</Capacitance>
+      <Capacitance>64.49382</Capacitance>
       <DrivePulseFrequency>0.5</DrivePulseFrequency>
-      <Threshold>940</Threshold>
-      <Hysteresis>47</Hysteresis>
+      <Threshold>65535</Threshold>
+      <Hysteresis>3276</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>155</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>2</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>65.664474</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>154</Threshold>
+      <Hysteresis>7</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>159</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>3</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>65.202286</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>43</Threshold>
+      <Hysteresis>2</Hysteresis>
+      <ScanTime>0.526</ScanTime>
+      <CTSUSSDIV>7</CTSUSSDIV>
+      <CTSUSNUM>0</CTSUSNUM>
+      <CTSUSO>158</CTSUSO>
+      <CTSUSDPA>24</CTSUSDPA>
+    </TunedData>
+    <TunedData>
+      <MethodID>0</MethodID>
+      <TouchIFID>4</TouchIFID>
+      <TouchIFType>1</TouchIFType>
+      <Capacitance>63.647038</Capacitance>
+      <DrivePulseFrequency>0.5</DrivePulseFrequency>
+      <Threshold>5</Threshold>
+      <Hysteresis>0</Hysteresis>
       <ScanTime>0.526</ScanTime>
       <CTSUSSDIV>7</CTSUSSDIV>
       <CTSUSNUM>0</CTSUSNUM>
@@ -166,54 +208,12 @@
     </TunedData>
     <TunedData>
       <MethodID>0</MethodID>
-      <TouchIFID>2</TouchIFID>
-      <TouchIFType>1</TouchIFType>
-      <Capacitance>63.987774</Capacitance>
-      <DrivePulseFrequency>0.5</DrivePulseFrequency>
-      <Threshold>687</Threshold>
-      <Hysteresis>34</Hysteresis>
-      <ScanTime>0.526</ScanTime>
-      <CTSUSSDIV>7</CTSUSSDIV>
-      <CTSUSNUM>0</CTSUSNUM>
-      <CTSUSO>153</CTSUSO>
-      <CTSUSDPA>24</CTSUSDPA>
-    </TunedData>
-    <TunedData>
-      <MethodID>0</MethodID>
-      <TouchIFID>3</TouchIFID>
-      <TouchIFType>1</TouchIFType>
-      <Capacitance>61.47104</Capacitance>
-      <DrivePulseFrequency>0.5</DrivePulseFrequency>
-      <Threshold>1194</Threshold>
-      <Hysteresis>59</Hysteresis>
-      <ScanTime>0.526</ScanTime>
-      <CTSUSSDIV>7</CTSUSSDIV>
-      <CTSUSNUM>0</CTSUSNUM>
-      <CTSUSO>144</CTSUSO>
-      <CTSUSDPA>24</CTSUSDPA>
-    </TunedData>
-    <TunedData>
-      <MethodID>0</MethodID>
-      <TouchIFID>4</TouchIFID>
-      <TouchIFType>1</TouchIFType>
-      <Capacitance>61.605988</Capacitance>
-      <DrivePulseFrequency>0.5</DrivePulseFrequency>
-      <Threshold>1140</Threshold>
-      <Hysteresis>57</Hysteresis>
-      <ScanTime>0.526</ScanTime>
-      <CTSUSSDIV>7</CTSUSSDIV>
-      <CTSUSNUM>0</CTSUSNUM>
-      <CTSUSO>144</CTSUSO>
-      <CTSUSDPA>24</CTSUSDPA>
-    </TunedData>
-    <TunedData>
-      <MethodID>0</MethodID>
       <TouchIFID>5</TouchIFID>
       <TouchIFType>1</TouchIFType>
-      <Capacitance>6.254723</Capacitance>
+      <Capacitance>6.322196</Capacitance>
       <DrivePulseFrequency>3.125</DrivePulseFrequency>
-      <Threshold>31</Threshold>
-      <Hysteresis>1</Hysteresis>
+      <Threshold>65535</Threshold>
+      <Hysteresis>3276</Hysteresis>
       <ScanTime>0.67328</ScanTime>
       <CTSUSSDIV>1</CTSUSSDIV>
       <CTSUSNUM>7</CTSUSNUM>
@@ -221,7 +221,7 @@
       <CTSUSDPA>3</CTSUSDPA>
     </TunedData>
     <TargetConnection>0</TargetConnection>
-    <LogFileName>l_ultra_slow_jogging_log_tuning20260611133942.log</LogFileName>
+    <LogFileName>l_ultra_slow_jogging_log_tuning20260617163113.log</LogFileName>
     <Vcc>3.3</Vcc>
     <AdvancedTunedData>
       <MethodID>0</MethodID>

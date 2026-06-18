@@ -1,0 +1,113 @@
+2025/11/11(Ver01.002):
+	Fw:	
+		1. Renesas RA6M5 init. phase. Ver01.002 --> changed from Ver01.001(RA6M2)
+			"SilBaseUsj - Firmware Version: 20251111 Ver01.002(RA6M5)\r\n"
+
+		2. UART for PC, SCI9 - work
+			baudrate: 1500000
+			RXD:	P601
+			TXD:	P602
+
+		3. UART for BLE, SCI0 - work
+			baudrate: 115200
+			RXD:	P100
+			TXD:	P101	
+
+		4. UART for TOUCH, SCI6
+			baudrate: 115200
+			RXD:	P304
+			TXD:	P305	
+
+		5. g_timer1(AGT) -- 5ms, period
+			reset uart dtc rx dtc setting, timer1
+			g_timer1_cb -- interrupt callback func.
+
+		6. g_timer0(AGT) -- 10ms, period
+			baudrate: 1500000
+			touch period issue start scan
+
+		7. g_timer2(GPT) -- 1s, period
+			g_timer2_cb -- interrupt callback func.
+
+		8. Touch pin alignment
+								//		-------- RA6M5 --------
+								//	
+				TOUCH_CHS_LEFT_UP = 0,		//	TS01(LEFT_UP)		TS12(RIGHT_UP)
+				TOUCH_CHS_LEFT_DWN,		//	----------------	----------------
+				TOUCH_CHS_RIGHT_DWN,		//	TS05(LEFT_DWN)		TS09(RIGHT_DWN)
+				TOUCH_CHS_RIGHT_UP,		// 	----------------	----------------
+								//  TSCAP -- P207
+
+		9. g_timer3(GPT, PWM), Ch2 -- 10 Hz.
+			output pin P113
+			
+
+	App:
+		1. 
+
+
+
+2025/10/27(Ver01.001):
+	Fw:
+		1. Ver01.001 - change from Ver01.000
+		2. Version Output --
+			SilBaseUsj - Firmware Version: 20251027 Ver01.001(RA6M2)
+		3. output steps command from 1 second to 62.5 ms, 16Hz
+			$SILUSJSTPS
+
+	App:
+		1. Ver02.000 - No Change
+		
+
+
+2025/10/22(Ver01.000):
+	Fw:	
+		1. Renesas RA6M2 init. phase. Ver01.000
+			"SilBaseUsj - Firmware Version: 20251022 Ver01.000(RA6M2)\r\n"
+
+		2. UART for PC, SCI9 - work
+			baudrate: 1500000
+			RXD:	P601
+			TXD:	P602
+
+		3. UART for BLE, SCI7 - work
+			baudrate: 115200
+			RXD:	P614
+			TXD:	P613	
+
+		4. UART for TOUCH, SCI1
+			baudrate: 115200
+			RXD:	P212
+			TXD:	P213	
+
+		5. g_timer1(AGT) -- 5ms, period
+			reset uart dtc rx dtc setting, timer1
+			g_timer1_cb -- interrupt callback func.
+
+		6. g_timer0(AGT) -- 10ms, period
+			baudrate: 1500000
+			touch period issue start scan
+
+		7. g_timer2(GPT) -- 1s, period
+			g_timer2_cb -- interrupt callback func.
+
+		8. Touch pin alignment
+							//		-------- RA6M2 --------
+							//	
+			TOUCH_CHS_RIGHT_DWN = 0,	//	TS08(LEFT_UP) - P412	TS06(RIGHT_UP) - P410
+			TOUCH_CHS_RIGHT_UP,		//	----------------	----------------
+			TOUCH_CHS_LEFT_UP,		//	TS11(LEFT_DWN) - P415	TS04(RIGHT_DWN) - P408
+			TOUCH_CHS_LEFT_DWN,		// 	----------------	----------------
+							//	TSCAP -- P205
+
+
+
+	App:
+		1. Ver02.000 - change from Ver01.004
+		2. add software reset at command
+			$SILSWRB
+
+
+
+
+

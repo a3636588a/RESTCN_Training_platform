@@ -20,6 +20,6 @@ INCLUDE memory_regions.ld
 /*FLASH_START = 0x00078100;*/
 
 
-FLASH_START = 0x00008100;
+FLASH_START = 0x00000000;
 
 INCLUDE fsp_gen.ld

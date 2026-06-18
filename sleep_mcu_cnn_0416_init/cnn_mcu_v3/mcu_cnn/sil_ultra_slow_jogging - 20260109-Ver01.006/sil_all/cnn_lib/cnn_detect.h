@@ -1,6 +1,6 @@
 #ifndef CNN_DETECT_H
 #define CNN_DETECT_H
-#define CNN_OUT_DIM 7u
+#define CNN_OUT_DIM 16u
 #include <stdbool.h>
 
 typedef struct {

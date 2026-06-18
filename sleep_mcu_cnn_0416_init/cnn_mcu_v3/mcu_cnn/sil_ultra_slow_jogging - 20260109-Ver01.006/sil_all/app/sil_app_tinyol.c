@@ -278,6 +278,15 @@ static const uint16_t (*SIL_APP_TINYOL_GetDefaultWindowSet(uint16_t label))[TINY
     case 4: return tinyol_default_cls_4_windows;
     case 5: return tinyol_default_cls_5_windows;
     case 6: return tinyol_default_cls_6_windows;
+    case 7: return tinyol_default_cls_7_windows;
+    case 8: return tinyol_default_cls_8_windows;
+    case 9: return tinyol_default_cls_9_windows;
+    case 10: return tinyol_default_cls_10_windows;
+    case 11: return tinyol_default_cls_11_windows;
+    case 12: return tinyol_default_cls_12_windows;
+    case 13: return tinyol_default_cls_13_windows;
+    case 14: return tinyol_default_cls_14_windows;
+    case 15: return tinyol_default_cls_15_windows;
     default: return tinyol_default_cls_0_windows;
     }
 }
@@ -292,6 +301,15 @@ static uint16_t SIL_APP_TINYOL_GetDefaultWindowCount(uint16_t label)
     case 4: return (uint16_t)TINYOL_DEFAULT_CLS_4_COUNT;
     case 5: return (uint16_t)TINYOL_DEFAULT_CLS_5_COUNT;
     case 6: return (uint16_t)TINYOL_DEFAULT_CLS_6_COUNT;
+    case 7: return (uint16_t)TINYOL_DEFAULT_CLS_7_COUNT;
+    case 8: return (uint16_t)TINYOL_DEFAULT_CLS_8_COUNT;
+    case 9: return (uint16_t)TINYOL_DEFAULT_CLS_9_COUNT;
+    case 10: return (uint16_t)TINYOL_DEFAULT_CLS_10_COUNT;
+    case 11: return (uint16_t)TINYOL_DEFAULT_CLS_11_COUNT;
+    case 12: return (uint16_t)TINYOL_DEFAULT_CLS_12_COUNT;
+    case 13: return (uint16_t)TINYOL_DEFAULT_CLS_13_COUNT;
+    case 14: return (uint16_t)TINYOL_DEFAULT_CLS_14_COUNT;
+    case 15: return (uint16_t)TINYOL_DEFAULT_CLS_15_COUNT;
     default: return (uint16_t)TINYOL_DEFAULT_CLS_0_COUNT;
     }
 }
@@ -307,6 +325,15 @@ static const uint16_t *SIL_APP_TINYOL_GetDefaultBase(uint16_t label)
     case 4: return tinyol_default_cls_4_base;
     case 5: return tinyol_default_cls_5_base;
     case 6: return tinyol_default_cls_6_base;
+    case 7: return tinyol_default_cls_7_base;
+    case 8: return tinyol_default_cls_8_base;
+    case 9: return tinyol_default_cls_9_base;
+    case 10: return tinyol_default_cls_10_base;
+    case 11: return tinyol_default_cls_11_base;
+    case 12: return tinyol_default_cls_12_base;
+    case 13: return tinyol_default_cls_13_base;
+    case 14: return tinyol_default_cls_14_base;
+    case 15: return tinyol_default_cls_15_base;
     default: return tinyol_default_cls_0_base;
 #else
     case 0: return tinyol_default_cls_0_base[0];
@@ -316,6 +343,15 @@ static const uint16_t *SIL_APP_TINYOL_GetDefaultBase(uint16_t label)
     case 4: return tinyol_default_cls_4_base[0];
     case 5: return tinyol_default_cls_5_base[0];
     case 6: return tinyol_default_cls_6_base[0];
+    case 7: return tinyol_default_cls_7_base[0];
+    case 8: return tinyol_default_cls_8_base[0];
+    case 9: return tinyol_default_cls_9_base[0];
+    case 10: return tinyol_default_cls_10_base[0];
+    case 11: return tinyol_default_cls_11_base[0];
+    case 12: return tinyol_default_cls_12_base[0];
+    case 13: return tinyol_default_cls_13_base[0];
+    case 14: return tinyol_default_cls_14_base[0];
+    case 15: return tinyol_default_cls_15_base[0];
     default: return tinyol_default_cls_0_base[0];
 #endif
     }
@@ -332,6 +368,15 @@ static const uint16_t *SIL_APP_TINYOL_GetDefaultHold(uint16_t label)
     case 4: return tinyol_default_cls_4_hold;
     case 5: return tinyol_default_cls_5_hold;
     case 6: return tinyol_default_cls_6_hold;
+    case 7: return tinyol_default_cls_7_hold;
+    case 8: return tinyol_default_cls_8_hold;
+    case 9: return tinyol_default_cls_9_hold;
+    case 10: return tinyol_default_cls_10_hold;
+    case 11: return tinyol_default_cls_11_hold;
+    case 12: return tinyol_default_cls_12_hold;
+    case 13: return tinyol_default_cls_13_hold;
+    case 14: return tinyol_default_cls_14_hold;
+    case 15: return tinyol_default_cls_15_hold;
     default: return tinyol_default_cls_0_hold;
 #else
     case 0: return tinyol_default_cls_0_hold[0];
@@ -341,6 +386,15 @@ static const uint16_t *SIL_APP_TINYOL_GetDefaultHold(uint16_t label)
     case 4: return tinyol_default_cls_4_hold[0];
     case 5: return tinyol_default_cls_5_hold[0];
     case 6: return tinyol_default_cls_6_hold[0];
+    case 7: return tinyol_default_cls_7_hold[0];
+    case 8: return tinyol_default_cls_8_hold[0];
+    case 9: return tinyol_default_cls_9_hold[0];
+    case 10: return tinyol_default_cls_10_hold[0];
+    case 11: return tinyol_default_cls_11_hold[0];
+    case 12: return tinyol_default_cls_12_hold[0];
+    case 13: return tinyol_default_cls_13_hold[0];
+    case 14: return tinyol_default_cls_14_hold[0];
+    case 15: return tinyol_default_cls_15_hold[0];
     default: return tinyol_default_cls_0_hold[0];
 #endif
     }
@@ -596,37 +650,35 @@ void SIL_APP_TINYOL_FlashCallback(flash_callback_args_t *p_args)
 static fsp_err_t SIL_APP_TINYOL_ReadActiveHeadFromFlash(void)
 {
     const sil_app_tinyol_head_flash_s *stored;
-    sil_app_tinyol_head_flash_s temp;
     uint32_t checksum;
 
     stored = (const sil_app_tinyol_head_flash_s *)(uintptr_t)TINYOL_ACTIVE_HEAD_FLASH_ADDR;
-    memcpy(&temp, stored, sizeof(temp));
 
-    if ((temp.magic != TINYOL_HEAD_MAGIC) ||
-        (temp.head_version != TINYOL_HEAD_VERSION) ||
-        (temp.f2_w_count != TINYOL_HEAD_F2_W_COUNT) ||
-        (temp.f2_b_count != TINYOL_HEAD_F2_B_COUNT) ||
-        (temp.out_w_count != TINYOL_HEAD_OUT_W_COUNT) ||
-        (temp.out_b_count != TINYOL_HEAD_OUT_B_COUNT) ||
-        (temp.weight_bytes != (uint32_t)(sizeof(temp.dense_f2_w) +
-                                         sizeof(temp.dense_f2_b) +
-                                         sizeof(temp.dense_out_w) +
-                                         sizeof(temp.dense_out_b)))) {
+    if ((stored->magic != TINYOL_HEAD_MAGIC) ||
+        (stored->head_version != TINYOL_HEAD_VERSION) ||
+        (stored->f2_w_count != TINYOL_HEAD_F2_W_COUNT) ||
+        (stored->f2_b_count != TINYOL_HEAD_F2_B_COUNT) ||
+        (stored->out_w_count != TINYOL_HEAD_OUT_W_COUNT) ||
+        (stored->out_b_count != TINYOL_HEAD_OUT_B_COUNT) ||
+        (stored->weight_bytes != (uint32_t)(sizeof(stored->dense_f2_w) +
+                                            sizeof(stored->dense_f2_b) +
+                                            sizeof(stored->dense_out_w) +
+                                            sizeof(stored->dense_out_b)))) {
         g_tinyol_head.active_head_exists = 0U;
         g_tinyol_head.active_weight_enabled = 0U;
         SIL_APP_TINYOL_UpdateHeadStatusFlags();
         return FSP_ERR_INVALID_DATA;
     }
 
-    checksum = SIL_APP_TINYOL_HeadChecksum(&temp);
-    if (checksum != temp.checksum) {
+    checksum = SIL_APP_TINYOL_HeadChecksum(stored);
+    if (checksum != stored->checksum) {
         g_tinyol_head.active_head_exists = 0U;
         g_tinyol_head.active_weight_enabled = 0U;
         SIL_APP_TINYOL_UpdateHeadStatusFlags();
         return FSP_ERR_INVALID_DATA;
     }
 
-    g_tinyol_head = temp;
+    memcpy(&g_tinyol_head, stored, sizeof(g_tinyol_head));
     g_tinyol_head.active_head_exists = 1U;
     g_tinyol_head.active_weight_enabled = 1U;
     SIL_APP_TINYOL_UpdateHeadStatusFlags();
@@ -1156,11 +1208,8 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
         if (label == g_tinyol.target_label) {
             continue;
         }
-        uint16_t limit = g_tinyol.anchor_windows;
         uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount(label);
-        if (limit == 0 || limit > default_count) {
-            limit = default_count;
-        }
+        uint16_t limit = (default_count < 3U) ? default_count : 3U;
         for (uint16_t i = 0U; i < limit; i++) {
             if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
                 g_train_samples[g_train_sample_count].is_target = 0;
@@ -1174,11 +1223,8 @@ fsp_err_t SIL_APP_TINYOL_BuildReplay(void)
 
     /* 2. Load default replay data for target class */
     {
-        uint16_t limit = g_tinyol.anchor_windows;
         uint16_t default_count = SIL_APP_TINYOL_GetDefaultWindowCount(g_tinyol.target_label);
-        if (limit == 0 || limit > default_count) {
-            limit = default_count;
-        }
+        uint16_t limit = (default_count < 3U) ? default_count : 3U;
         for (uint16_t i = 0U; i < limit; i++) {
             if (g_train_sample_count < TINYOL_MAX_TRAIN_SAMPLES) {
                 g_train_samples[g_train_sample_count].is_target = 0;
