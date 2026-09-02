@@ -18,6 +18,7 @@ scripts = [
     'training_ds_tcn.py',
     'export_weights_v2.py',
     'gen_cnn_lib.py',
+    'tool_operations.py',
     'gen_cnn_model_header.py',
     'gen_dynamic_model_header.py',
     'detection_model.py'

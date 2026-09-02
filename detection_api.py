@@ -27,10 +27,10 @@ __all__ = [
 class DetectionConfig:
     """Configuration shared by serial and CSV detection operations."""
 
-    port: str
+    serial_port: str
     baud: int
     model_path: str
-    meta_path: str
+    metadata_path: str
     post_alpha: float
     post_margin: float
     post_tier_data: dict
@@ -47,6 +47,16 @@ class DetectionConfig:
     gain_clamp_min: float
     gain_clamp_max: float
     dynamic_json_path: str = "dynamic_gestures.json"
+
+    # Compatibility aliases are intentionally read-only so one canonical field
+    # remains responsible for serialization and new API documentation.
+    @property
+    def port(self) -> str:
+        return self.serial_port
+
+    @property
+    def meta_path(self) -> str:
+        return self.metadata_path
 
 
 @dataclass
@@ -344,10 +354,10 @@ def _detection_resolve_model_path(config: DetectionConfig, log_fn: Callable[[str
 
     resolved_model_path = config.model_path
     try:
-        if Path(config.meta_path).exists():
+        if Path(config.metadata_path).exists():
             import joblib
 
-            metadata = joblib.load(config.meta_path)
+            metadata = joblib.load(config.metadata_path)
             if metadata.get("model_type") == "cnn" and resolved_model_path.endswith(".pkl"):
                 model_path = Path(resolved_model_path)
                 candidates = (
@@ -429,13 +439,13 @@ def detection_run_serial_from_config(
     try:
         model_path = _detection_resolve_model_path(config, effective_log)
         effective_log("--- Detect started ---")
-        effective_log(f"Port: {config.port}, Baud: {config.baud}")
+        effective_log(f"Port: {config.serial_port}, Baud: {config.baud}")
         effective_log(f"Model: {model_path}")
-        effective_log(f"Meta : {config.meta_path}")
+        effective_log(f"Meta : {config.metadata_path}")
 
         detector = detect.RealtimeGestureDetector(
             model_path=model_path,
-            metadata_path=config.meta_path,
+            metadata_path=config.metadata_path,
             slope_factor=config.post_slope_factor,
             manual_holdavg=config.manual_holdavg,
         )
@@ -449,7 +459,7 @@ def detection_run_serial_from_config(
             runtime_state,
             effective_log,
         )
-        serial_handle = serial.Serial(config.port, int(config.baud), timeout=0.1)
+        serial_handle = serial.Serial(config.serial_port, int(config.baud), timeout=0.1)
         serial_handle.reset_input_buffer()
         effective_log("Serial opened & Buffer reset.")
         effective_log("[INIT] Waiting for dynamic baseline from SILBASEEXT/SILMOVBASE.")
@@ -563,11 +573,11 @@ def detection_run_csv_from_config(
         effective_log("--- CSV replay detect started ---")
         effective_log(f"CSV  : {csv_path}")
         effective_log(f"Model: {model_path}")
-        effective_log(f"Meta : {config.meta_path}")
+        effective_log(f"Meta : {config.metadata_path}")
 
         detector = detect.RealtimeGestureDetector(
             model_path=model_path,
-            metadata_path=config.meta_path,
+            metadata_path=config.metadata_path,
             slope_factor=config.post_slope_factor,
             manual_holdavg=config.manual_holdavg,
         )

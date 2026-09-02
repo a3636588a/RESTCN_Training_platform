@@ -136,11 +136,14 @@ class TrainWorker(QObject):
 # Compatibility name retained inside the UI while the public contract lives in
 # a Qt-independent module for script and test callers.
 DetectConfig = detection_api.DetectionConfig
+CodegenConfig = tool_operations.CodegenConfig
+BuildConfig = tool_operations.BuildConfig
+FlashConfig = tool_operations.FlashConfig
 
 
 @dataclass
 class TinyOlRecordConfig:
-    port: str
+    serial_port: str
     baud: int
     output_dir: str
     session_id: str
@@ -176,9 +179,9 @@ class TinyOlRecordWorker(QObject):
             output_dir = Path(self.cfg.output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            ser = serial.Serial(self.cfg.port, self.cfg.baud, timeout=0.1)
+            ser = serial.Serial(self.cfg.serial_port, self.cfg.baud, timeout=0.1)
             ser.reset_input_buffer()
-            self._log(f"UART record opened: {self.cfg.port} @ {self.cfg.baud}")
+            self._log(f"UART record opened: {self.cfg.serial_port} @ {self.cfg.baud}")
 
             rows: List[dict] = []
             current_base_map = dict(self.cfg.std_baseline_a or {})
@@ -290,7 +293,7 @@ class TinyOlRecordWorker(QObject):
 @dataclass
 class TinyOlTrainConfig:
     model_path: str
-    meta_path: str
+    metadata_path: str
     output_dir: str
     session_id: str
     target_id: int
@@ -355,7 +358,7 @@ class TinyOlTrainWorker(QObject):
         return X_win, X_var, X_mean, y
 
     def _build_dataset(self):
-        meta = joblib.load(self.cfg.meta_path)
+        meta = joblib.load(self.cfg.metadata_path)
         id_to_name = meta.get("id_to_name", {})
         name_to_id = {str(v): int(k) for k, v in id_to_name.items()}
 
@@ -572,32 +575,13 @@ class TinyOlTrainWorker(QObject):
 
 
 @dataclass
-class CodegenConfig:
-    meta_path: str
-    model_path: str
-    outdir: str
-    base_name: str = "cnn"
-    std_base_a: list[int] = field(default_factory=list)
-    std_hold_a: list[int] = field(default_factory=list)
-    data_dir: str = ""
-    # Post-processing
-    alpha: float = 0.20
-    margin: float = 0.45
-    exit_thresh: float = 0.25
-    infer_stride: int = 6
-    slope_factor: float = 20.0
-    tier_data: dict = field(default_factory=dict)
-
-
-
-
-@dataclass
 class AutoBuildConfig:
-    detect_proj_dir: str
-    feature_proj_dir: str
-    rebuild_proj_dir: str
+    detection_project_dir: str
+    feature_project_dir: str
+    rebuild_project_dir: str
     build_tool_dir: str
-    last_gencode_output_dir: str
+    last_codegen_output_dir: str
+    auto_cleanup: bool = True
 # Detect workers are Qt adapters; detection state and I/O ownership live in
 # detection_api so the same operations are callable without the UI.
 class DetectWorker(QObject):
@@ -681,16 +665,6 @@ class CsvDetectReplayWorker(QObject):
 # =========================
 # Build worker
 # =========================
-@dataclass
-class BuildConfig:
-    proj_dir: str
-    build_tool_dir: str
-    config_name: str = "Debug"
-    do_clean: bool = False
-    target_name: str = "glove_ml_mlp"
-
-
-
 class BuildWorker(QObject):
     log_line = Signal(str)
     finished_ok = Signal(dict)
@@ -708,7 +682,7 @@ class BuildWorker(QObject):
     def run(self):
         try:
             self._log("--- Build started ---")
-            self._log(f"Project: {self.cfg.proj_dir}")
+            self._log(f"Project: {self.cfg.project_dir}")
             self._log(f"Build tool: {self.cfg.build_tool_dir}")
             result = tool_operations.build_run_from_config(
                 self.cfg,
@@ -733,12 +707,6 @@ class BuildWorker(QObject):
 # =========================
 # Flash worker
 # =========================
-@dataclass
-class FlashConfig:
-    srec_path: str
-    com_port: str
-    tool_dir: str
-
 class FlashWorker(QObject):
     log_line = Signal(str)
     finished_ok = Signal(dict)
@@ -758,7 +726,7 @@ class FlashWorker(QObject):
         try:
             self._log("--- Flash started ---")
             self._log(f"SREC: {self.cfg.srec_path}")
-            self._log(f"Port: {self.cfg.com_port}")
+            self._log(f"Port: {self.cfg.serial_port}")
             result = tool_operations.flash_run_from_config(
                 self.cfg,
                 log_fn=self._log,
@@ -839,7 +807,7 @@ class AutoBuildWorker(QObject):
             from pathlib import Path
 
             self._log("--- Auto Build started ---")
-            output_dir = Path(self.cfg.last_gencode_output_dir)
+            output_dir = Path(self.cfg.last_codegen_output_dir)
             is_cnn = (output_dir / "cnn_features_lib.h").exists()
 
             if is_cnn:
@@ -851,14 +819,14 @@ class AutoBuildWorker(QObject):
                 self._log("Step 1: Generating mlp_detect library files...")
                 try:
                     import gen_remaining_libs as gen_rem
-                    gen_rem.main([str(self.cfg.last_gencode_output_dir)])
+                    gen_rem.main([str(self.cfg.last_codegen_output_dir)])
                 except Exception as e:
                     raise RuntimeError(f"gen_remaining_libs failed: {e}")
                 self._log("[OK] Generated mlp_detect support files")
 
                 # Step 2: Copy files to mlp_detect/src
                 self._log("Step 2: Copying files to mlp_detect/src...")
-                detect_src = Path(self.cfg.detect_proj_dir) / "src"
+                detect_src = Path(self.cfg.detection_project_dir) / "src"
                 files_detect = [
                     "dynamic_model.h", "mlp_model.h", "mlp_features_lib.h", "mlp_features_lib.c",
                     "dynamic_feature.h", "dynamic_feature.c", "hal_warmstart.c", "mlp_detect.h", "mlp_detect.c"
@@ -874,34 +842,34 @@ class AutoBuildWorker(QObject):
                 # Step 3: Build libmlp_detect.a
                 self._log("Step 3: Building libmlp_detect.a...")
                 build_bat = Path(self.cfg.build_tool_dir) / "build_static.bat"
-                if not self._run_build_process([str(build_bat), self.cfg.detect_proj_dir, "Debug", "clean", "libmlp_detect.a"]):
+                if not self._run_build_process([str(build_bat), self.cfg.detection_project_dir, "Debug", "clean", "libmlp_detect.a"]):
                     return 
 
                 # Step 4: Generate feature library files
                 self._log("Step 4: Generating mlp_feature library files...")
                 try:
                     import gen_feature_libs as gen_feat
-                    gen_feat.main([str(Path(self.cfg.feature_proj_dir) / "src")])
+                    gen_feat.main([str(Path(self.cfg.feature_project_dir) / "src")])
                 except Exception as e:
                     raise RuntimeError(f"gen_feature_libs failed: {e}")
                 self._log("[OK] Generated and moved files to mlp_feature/src")
 
                 # Step 5: Build libmlp_feature.a
                 self._log("Step 5: Building libmlp_feature.a...")
-                if not self._run_build_process([str(build_bat), self.cfg.feature_proj_dir, "Debug", "clean", "libmlp_feature.a"]):
+                if not self._run_build_process([str(build_bat), self.cfg.feature_project_dir, "Debug", "clean", "libmlp_feature.a"]):
                     return
 
                 # Step 6: Copy libraries
                 self._log("Step 6: Copying libraries to rebuild/lib...")
-                rebuild_lib = Path(self.cfg.rebuild_proj_dir) / "lib"
+                rebuild_lib = Path(self.cfg.rebuild_project_dir) / "lib"
                 rebuild_lib.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(Path(self.cfg.detect_proj_dir) / "Debug" / "libmlp_detect.a", rebuild_lib / "libmlp_detect.a")
-                shutil.copy2(Path(self.cfg.feature_proj_dir) / "Debug" / "libmlp_feature.a", rebuild_lib / "libmlp_feature.a")
+                shutil.copy2(Path(self.cfg.detection_project_dir) / "Debug" / "libmlp_detect.a", rebuild_lib / "libmlp_detect.a")
+                shutil.copy2(Path(self.cfg.feature_project_dir) / "Debug" / "libmlp_feature.a", rebuild_lib / "libmlp_feature.a")
                 self._log("[OK] Libraries copied")
 
             # Step 7: Sync Headers and Sources to Main Project
             self._log("Step 7: Synchronizing files to main project...")
-            rebuild_src = Path(self.cfg.rebuild_proj_dir) / "src"
+            rebuild_src = Path(self.cfg.rebuild_project_dir) / "src"
             rebuild_src.mkdir(parents=True, exist_ok=True)
             
             if is_cnn:
@@ -924,7 +892,7 @@ class AutoBuildWorker(QObject):
             # Step 8: Patch paths in makefiles to match current environment if needed
             self._log("Step 8.1: Patching hardcoded paths in makefiles...")
             try:
-                self._patch_makefile_paths(Path(self.cfg.rebuild_proj_dir) / "Debug")
+                self._patch_makefile_paths(Path(self.cfg.rebuild_project_dir) / "Debug")
             except Exception as e:
                 self._log(f"  [WARN] Path patching failed: {e}")
 
@@ -934,7 +902,7 @@ class AutoBuildWorker(QObject):
             if not firmware_bat.exists():
                 raise RuntimeError(f"Firmware build script not found: {firmware_bat}")
 
-            if not self._run_build_process([str(firmware_bat), self.cfg.rebuild_proj_dir, "Debug", "clean", "glove_mlp_rebuild"]):
+            if not self._run_build_process([str(firmware_bat), self.cfg.rebuild_project_dir, "Debug", "clean", "glove_mlp_rebuild"]):
                 return
 
             # Step 9: Secure Cleanup
@@ -949,7 +917,7 @@ class AutoBuildWorker(QObject):
             self._log("[OK] All build steps completed successfully!")
             self.finished_ok.emit({
                 "completed": True, 
-                "srec_path": str(Path(self.cfg.rebuild_proj_dir) / "Debug" / "glove_mlp_rebuild.srec"),
+                "srec_path": str(Path(self.cfg.rebuild_project_dir) / "Debug" / "glove_mlp_rebuild.srec"),
                 "cleaned": cleaned
             })
 
@@ -1093,25 +1061,25 @@ class AutoBuildWorker(QObject):
         base_dir = Path(__file__).parent
         
         # 1. Clear mlp_detect/src (Keep folder, delete files)
-        detect_src = Path(self.cfg.detect_proj_dir) / "src"
+        detect_src = Path(self.cfg.detection_project_dir) / "src"
         if detect_src.exists():
             for f in detect_src.iterdir():
                 if f.is_file(): f.unlink()
             self._log("  Cleared: mlp_detect/src")
 
         # 2. Clear mlp_feature/src (Keep folder, delete files)
-        feat_src = Path(self.cfg.feature_proj_dir) / "src"
+        feat_src = Path(self.cfg.feature_project_dir) / "src"
         if feat_src.exists():
             for f in feat_src.iterdir():
                 if f.is_file(): f.unlink()
             self._log("  Cleared: mlp_feature/src")
 
         # 3. Delete Gen Code output directory (e.g., testarea)
-        if self.cfg.last_gencode_output_dir:
-            out_dir = Path(self.cfg.last_gencode_output_dir)
-            if out_dir.exists():
-                shutil.rmtree(out_dir)
-                self._log(f"  Deleted: {out_dir.name} (Source folder)")
+        if self.cfg.last_codegen_output_dir:
+            output_dir = Path(self.cfg.last_codegen_output_dir)
+            if output_dir.exists():
+                shutil.rmtree(output_dir)
+                self._log(f"  Deleted: {output_dir.name} (Source folder)")
 
         # 4. Delete testarea_feature if exists
         feat_testarea = base_dir / "testarea_feature"
@@ -1407,7 +1375,7 @@ class MainWindow(QMainWindow):
         self.dynamic_json_path = "dynamic_gestures.json"
         
         # Auto build related
-        self.last_gencode_output_dir = None
+        self.last_codegen_output_dir = None
 
         # =========================
         # Shared terminal (right)
@@ -1528,11 +1496,11 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _open_train_log_file(self, out_dir: Path):
+    def _open_train_log_file(self, output_dir: Path):
         try:
-            out_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-            log_path = out_dir / f"train_log_{ts}.txt"
+            log_path = output_dir / f"train_log_{ts}.txt"
             self._train_log_fp = open(log_path, "a", encoding="utf-8")
             self._train_log_path = str(log_path)
             self.append_log(_tag_line("TRAIN", f"[UI] Train log file: {log_path}"))
@@ -2029,19 +1997,19 @@ class MainWindow(QMainWindow):
         self.g_out = QGroupBox("Output")
         self.f_out = QFormLayout(self.g_out)
 
-        self.edit_out_dir = QLineEdit()
+        self.edit_output_dir = QLineEdit()
         self.btn_browse_out = QPushButton("Browse...")
         w_out = QWidget()
         hout = QHBoxLayout(w_out)
         hout.setContentsMargins(0, 0, 0, 0)
-        hout.addWidget(self.edit_out_dir, 1)
+        hout.addWidget(self.edit_output_dir, 1)
         hout.addWidget(self.btn_browse_out)
         self.f_out.addRow("output_dir:", w_out)
 
-        self.edit_out_model_path = QLineEdit("gesture_model_v5.pkl")
-        self.edit_out_meta_path = QLineEdit("gesture_model_meta_v5.pkl")
-        self.f_out.addRow("out_model_path:", self.edit_out_model_path)
-        self.f_out.addRow("out_meta_path:", self.edit_out_meta_path)
+        self.edit_output_model_path = QLineEdit("gesture_model_v5.pkl")
+        self.edit_output_metadata_path = QLineEdit("gesture_model_meta_v5.pkl")
+        self.f_out.addRow("output_model_path:", self.edit_output_model_path)
+        self.f_out.addRow("output_metadata_path:", self.edit_output_metadata_path)
 
         layout.addWidget(self.g_out)
 
@@ -2064,7 +2032,7 @@ class MainWindow(QMainWindow):
 
         # connections
         self.btn_browse_data.clicked.connect(lambda: self._browse_dir(self.edit_data_dir))
-        self.btn_browse_out.clicked.connect(lambda: self._browse_dir(self.edit_out_dir))
+        self.btn_browse_out.clicked.connect(lambda: self._browse_dir(self.edit_output_dir))
 
         self.btn_label_add.clicked.connect(self._add_label_row)
         self.btn_label_remove.clicked.connect(self._remove_selected_label_rows)
@@ -2629,12 +2597,12 @@ class MainWindow(QMainWindow):
         h2.addWidget(self.le_gen_cnn_model); h2.addWidget(self.btn_gen_cnn_browse_model)
         f.addRow("Model (.keras/.h5):", w2)
 
-        self.le_gen_cnn_outdir = QLineEdit()
-        self.btn_gen_cnn_browse_outdir = QPushButton("Browse...")
-        self.btn_gen_cnn_browse_outdir.clicked.connect(self.on_gen_cnn_browse_outdir)
+        self.edit_codegen_output_dir = QLineEdit()
+        self.btn_codegen_browse_output_dir = QPushButton("Browse...")
+        self.btn_codegen_browse_output_dir.clicked.connect(self.on_codegen_browse_output_dir)
         w3 = QWidget()
         h3 = QHBoxLayout(w3); h3.setContentsMargins(0, 0, 0, 0)
-        h3.addWidget(self.le_gen_cnn_outdir); h3.addWidget(self.btn_gen_cnn_browse_outdir)
+        h3.addWidget(self.edit_codegen_output_dir); h3.addWidget(self.btn_codegen_browse_output_dir)
         f.addRow("Output dir (cnn_lib):", w3)
 
         self.le_gen_cnn_data_dir = QLineEdit()
@@ -2803,9 +2771,9 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Select CNN Model", "", "Keras/H5 (*.keras *.h5)")
         if path: self.le_gen_cnn_model.setText(path)
 
-    def on_gen_cnn_browse_outdir(self):
+    def on_codegen_browse_output_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Select Output Directory (cnn_lib)")
-        if path: self.le_gen_cnn_outdir.setText(path)
+        if path: self.edit_codegen_output_dir.setText(path)
 
     def on_gen_cnn_browse_data_dir(self):
         path = QFileDialog.getExistingDirectory(self, "Select TinyOL CSV Data Directory")
@@ -2853,8 +2821,8 @@ class MainWindow(QMainWindow):
     def on_gen_cnn_meta_changed(self):
         self._populate_tier_table(self.le_gen_cnn_meta.text(), self.tbl_gen_cnn_tiers, self.tbl_tier_base)
 
-    def _populate_tier_table(self, meta_path: str, target_tbl: QTableWidget, base_tbl: QTableWidget):
-        path = meta_path.strip()
+    def _populate_tier_table(self, metadata_path: str, target_tbl: QTableWidget, base_tbl: QTableWidget):
+        path = metadata_path.strip()
         if not path or not os.path.exists(path):
             target_tbl.setRowCount(0)
             return
@@ -2943,15 +2911,15 @@ class MainWindow(QMainWindow):
         if self.thread_gen_cnn is not None:
             return
 
-        meta_path = self.le_gen_cnn_meta.text().strip()
+        metadata_path = self.le_gen_cnn_meta.text().strip()
         data_dir = self.le_gen_cnn_data_dir.text().strip()
-        if not data_dir and meta_path:
-            data_dir = str(Path(meta_path).parent)
+        if not data_dir and metadata_path:
+            data_dir = str(Path(metadata_path).parent)
         
         cfg = CodegenConfig(
-            meta_path=meta_path,
+            metadata_path=metadata_path,
             model_path=self.le_gen_cnn_model.text().strip(),
-            outdir=self.le_gen_cnn_outdir.text().strip(),
+            output_dir=self.edit_codegen_output_dir.text().strip(),
             base_name=self.le_gen_cnn_basename.text().strip(),
             std_base_a=[sb.value() for sb in self.gen_cnn_std_base_spins],
             std_hold_a=[sb.value() for sb in self.gen_cnn_std_hold_spins],
@@ -2985,8 +2953,8 @@ class MainWindow(QMainWindow):
     def on_gen_cnn_ok(self, res: dict):
         self.append_log(_tag_line("GEN_CNN", "=== GEN CNN SUCCESS ==="))
         # Store output dir for Auto Build
-        self.last_gencode_output_dir = res.get("out_dir")
-        self.lbl_autobuild_output_dir.setText(f"Output Directory: {self.last_gencode_output_dir}")
+        self.last_codegen_output_dir = res.get("output_dir")
+        self.lbl_autobuild_output_dir.setText(f"Output Directory: {self.last_codegen_output_dir}")
         QMessageBox.information(self, "Gen CNN", "CNN Library (cnn_lib) generated successfully!")
 
     def on_gen_cnn_err(self, err: str):
@@ -3015,13 +2983,13 @@ class MainWindow(QMainWindow):
 
         # Project Directory
         f_proj = QFormLayout()
-        self.edit_build_proj_dir = QLineEdit()
-        self.edit_build_proj_dir.textChanged.connect(self.update_srec_path) # Auto update SREC
+        self.edit_build_project_dir = QLineEdit()
+        self.edit_build_project_dir.textChanged.connect(self.update_srec_path) # Auto update SREC
         self.btn_browse_build_proj = QPushButton("Browse...")
         w_proj = QWidget()
         h_proj = QHBoxLayout(w_proj)
         h_proj.setContentsMargins(0, 0, 0, 0)
-        h_proj.addWidget(self.edit_build_proj_dir, 1)
+        h_proj.addWidget(self.edit_build_project_dir, 1)
         h_proj.addWidget(self.btn_browse_build_proj)
         f_proj.addRow("Project Directory:", w_proj)
 
@@ -3196,7 +3164,7 @@ class MainWindow(QMainWindow):
 
     def on_startbuild_clicked(self):
         """Handle StartBuild button click (Asynchronous)"""
-        if not self.last_gencode_output_dir:
+        if not self.last_codegen_output_dir:
             QMessageBox.warning(self, "Auto Build", "No GenCode output directory available!\nPlease run Gen Code first.")
             return
         
@@ -3207,11 +3175,11 @@ class MainWindow(QMainWindow):
         self.stop_event_autobuild.clear()
         
         cfg = AutoBuildConfig(
-            detect_proj_dir=str(Path(__file__).parent / "mlp_detect"),
-            feature_proj_dir=str(Path(__file__).parent / "mlp_feature"),
-            rebuild_proj_dir=str(Path(__file__).parent / "glove_mlp_rebuild"),
+            detection_project_dir=str(Path(__file__).parent / "mlp_detect"),
+            feature_project_dir=str(Path(__file__).parent / "mlp_feature"),
+            rebuild_project_dir=str(Path(__file__).parent / "glove_mlp_rebuild"),
             build_tool_dir=str(Path(__file__).parent / "buildtool"),
-            last_gencode_output_dir=self.last_gencode_output_dir,
+            last_codegen_output_dir=self.last_codegen_output_dir,
             auto_cleanup=self.cb_auto_cleanup.isChecked()
         )
         
@@ -3236,7 +3204,7 @@ class MainWindow(QMainWindow):
         
         # Clear path since it was deleted in Step 9
         if res.get("cleaned"):
-            self.last_gencode_output_dir = None
+            self.last_codegen_output_dir = None
             self.update_autobuild_display()
 
         msg = "Auto Build completed successfully!\n"
@@ -3265,11 +3233,11 @@ class MainWindow(QMainWindow):
         
         # Use dummy Cfg for manual cleanup
         cfg = AutoBuildConfig(
-            detect_proj_dir=str(Path(__file__).parent / "mlp_detect"),
-            feature_proj_dir=str(Path(__file__).parent / "mlp_feature"),
-            rebuild_proj_dir=str(Path(__file__).parent / "glove_mlp_rebuild"),
+            detection_project_dir=str(Path(__file__).parent / "mlp_detect"),
+            feature_project_dir=str(Path(__file__).parent / "mlp_feature"),
+            rebuild_project_dir=str(Path(__file__).parent / "glove_mlp_rebuild"),
             build_tool_dir=str(Path(__file__).parent / "buildtool"),
-            last_gencode_output_dir=self.last_gencode_output_dir
+            last_codegen_output_dir=self.last_codegen_output_dir
         )
         
         # Create a temporary worker just for cleanup
@@ -3280,7 +3248,7 @@ class MainWindow(QMainWindow):
         # Inline run since it's mostly file IO
         try:
             worker._perform_cleanup()
-            self.last_gencode_output_dir = None
+            self.last_codegen_output_dir = None
             self.update_autobuild_display()
             QMessageBox.information(self, "Cleanup", "Secure cleanup finished successfully!")
         except Exception as e:
@@ -3304,10 +3272,10 @@ class MainWindow(QMainWindow):
 
     def update_autobuild_display(self):
         """Update Auto Build tab display with current gencode output directory"""
-        if self.last_gencode_output_dir:
+        if self.last_codegen_output_dir:
             self.lbl_autobuild_status.setText("Ready for Auto Build")
             self.lbl_autobuild_status.setStyleSheet("font-weight: bold; color: #4EC9B0;")
-            self.lbl_autobuild_output_dir.setText(f"Output Directory: {self.last_gencode_output_dir}")
+            self.lbl_autobuild_output_dir.setText(f"Output Directory: {self.last_codegen_output_dir}")
         else:
             self.lbl_autobuild_status.setText("No GenCode output available")
             self.lbl_autobuild_status.setStyleSheet("font-weight: bold; color: #FFA500;")
@@ -3411,14 +3379,14 @@ class MainWindow(QMainWindow):
                 continue
             label_defs.append({"prefix": prefix, "name": name or prefix, "id": _id})
 
-        out_dir = Path(self.edit_out_dir.text().strip()) if self.edit_out_dir.text().strip() else Path(".")
-        out_model_name = self.edit_out_model_path.text().strip()
-        out_meta_name  = self.edit_out_meta_path.text().strip()
+        output_dir = Path(self.edit_output_dir.text().strip()) if self.edit_output_dir.text().strip() else Path(".")
+        output_model_name = self.edit_output_model_path.text().strip()
+        output_metadata_name = self.edit_output_metadata_path.text().strip()
 
         cfg = training_api.TrainingConfig(
-            data_dir=Path(self.edit_data_dir.text().strip()),
-            out_model_path=str(out_dir / out_model_name),
-            out_meta_path=str(out_dir / out_meta_name),
+            data_dir=self.edit_data_dir.text().strip(),
+            output_model_path=str(output_dir / output_model_name),
+            output_metadata_path=str(output_dir / output_metadata_name),
 
             label_defs=label_defs,
             channels=self._selected_channels(),
@@ -3465,10 +3433,11 @@ class MainWindow(QMainWindow):
         
         prefixes = {d["prefix"].lower().strip() for d in cfg.label_defs}
         
-        if not cfg.data_dir.exists():
+        data_dir = Path(cfg.data_dir)
+        if not data_dir.exists():
             return {"total_found": 0, "total_valid": 0}
             
-        for f in cfg.data_dir.glob("*.csv"):
+        for f in data_dir.glob("*.csv"):
             total += 1
             p = f.name.split("-")[0].lower().strip()
             if p in prefixes:
@@ -3609,8 +3578,8 @@ class MainWindow(QMainWindow):
 
         self.stop_event_train.clear()
         self.btn_stop_train.setEnabled(True)
-        out_dir = Path(self.edit_out_dir.text().strip()) if self.edit_out_dir.text().strip() else Path(".")
-        self._open_train_log_file(out_dir)
+        output_dir = Path(self.edit_output_dir.text().strip()) if self.edit_output_dir.text().strip() else Path(".")
+        self._open_train_log_file(output_dir)
         self.append_log(_tag_line("TRAIN", "[UI] Starting training ..."))
         self._set_busy("train")
 
@@ -3665,7 +3634,7 @@ class MainWindow(QMainWindow):
     def on_view_report(self):
         """Open the training report PNG in the default system viewer"""
         import os
-        output_dir = self.edit_out_dir.text().strip()
+        output_dir = self.edit_output_dir.text().strip()
         if not output_dir:
             output_dir = "."
         report_path = os.path.join(output_dir, "training_report.png")
@@ -3931,8 +3900,8 @@ class MainWindow(QMainWindow):
         if manual_log_path:
             log_path = Path(manual_log_path)
         else:
-            meta_path = Path(self.edit_tinyol_meta.text().strip())
-            log_path = meta_path.parent / "log.txt"
+            metadata_path = Path(self.edit_tinyol_meta.text().strip())
+            log_path = metadata_path.parent / "log.txt"
         if not log_path.exists():
             return None, {}
 
@@ -4214,7 +4183,7 @@ class MainWindow(QMainWindow):
         if not self._tinyol_session:
             raise RuntimeError("TinyOL session is empty.")
         return TinyOlRecordConfig(
-            port=self.edit_tinyol_port.text().strip(),
+            serial_port=self.edit_tinyol_port.text().strip(),
             baud=int(self.combo_tinyol_baud.currentText()),
             output_dir=str(Path(self.edit_tinyol_output_dir.text().strip()) / str(self._tinyol_session["session_id"])),
             session_id=str(self._tinyol_session["session_id"]),
@@ -4232,7 +4201,7 @@ class MainWindow(QMainWindow):
         )
 
     def _validate_tinyol_record_config(self, cfg: TinyOlRecordConfig) -> Optional[str]:
-        if not cfg.port:
+        if not cfg.serial_port:
             return "TinyOL PORT is empty"
         if not cfg.output_dir:
             return "TinyOL output dir is empty"
@@ -4280,7 +4249,7 @@ class MainWindow(QMainWindow):
         )
         self.btn_tinyol_start_record.setEnabled(False)
         self.btn_tinyol_stop_record.setEnabled(True)
-        self.append_log(_tag_line("TINYOL", f"Target recording started via UART {cfg.port} @ {cfg.baud}."))
+        self.append_log(_tag_line("TINYOL", f"Target recording started via UART {cfg.serial_port} @ {cfg.baud}."))
 
         self.stop_event_tinyol_record = threading.Event()
         self.thread_tinyol_record = QThread()
@@ -4438,7 +4407,7 @@ class MainWindow(QMainWindow):
 
         cfg = TinyOlTrainConfig(
             model_path=self.edit_tinyol_model.text().strip(),
-            meta_path=self.edit_tinyol_meta.text().strip(),
+            metadata_path=self.edit_tinyol_meta.text().strip(),
             output_dir=str(Path(self.edit_tinyol_output_dir.text().strip()) / self._tinyol_session["session_id"]),
             session_id=str(self._tinyol_session["session_id"]),
             target_id=int(self._tinyol_session["target_id"]),
@@ -4487,11 +4456,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "TinyOL", "No window CSVs available to export.")
             return
 
-        out_dir = Path(self.edit_tinyol_output_dir.text().strip()) / self._tinyol_session["session_id"]
-        out_dir.mkdir(parents=True, exist_ok=True)
-        header_path = out_dir / "tinyol_session_windows.h"
-        source_path = out_dir / "tinyol_session_windows.c"
-        manifest_path = out_dir / "tinyol_session_manifest.json"
+        output_dir = Path(self.edit_tinyol_output_dir.text().strip()) / self._tinyol_session["session_id"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+        header_path = output_dir / "tinyol_session_windows.h"
+        source_path = output_dir / "tinyol_session_windows.c"
+        manifest_path = output_dir / "tinyol_session_manifest.json"
 
         id_to_name = self._tinyol_meta.get("id_to_name", {})
         channels = [int(ch) for ch in self._tinyol_meta.get("channels", [])]
@@ -4586,8 +4555,8 @@ class MainWindow(QMainWindow):
         if manual_log_path:
             log_path = Path(manual_log_path)
         else:
-            meta_path = Path(self.edit_tinyol_meta.text().strip())
-            log_path = meta_path.parent / "log.txt"
+            metadata_path = Path(self.edit_tinyol_meta.text().strip())
+            log_path = metadata_path.parent / "log.txt"
         if not log_path.exists():
             return []
 
@@ -4624,8 +4593,8 @@ class MainWindow(QMainWindow):
         if manual_log_path:
             log_path = Path(manual_log_path)
         else:
-            meta_path = Path(self.edit_tinyol_meta.text().strip())
-            log_path = meta_path.parent / "log.txt"
+            metadata_path = Path(self.edit_tinyol_meta.text().strip())
+            log_path = metadata_path.parent / "log.txt"
         if not log_path.exists():
             return []
 
@@ -4801,10 +4770,10 @@ class MainWindow(QMainWindow):
 
     def _build_detect_config_from_ui(self) -> DetectConfig:
         return DetectConfig(
-            port=self.edit_port.text().strip(),
+            serial_port=self.edit_port.text().strip(),
             baud=int(self.combo_baud.currentText()),
             model_path=self.edit_model.text().strip(),
-            meta_path=self.edit_meta.text().strip(),
+            metadata_path=self.edit_meta.text().strip(),
             post_alpha=self.dsb_detect_alpha.value(),
             post_margin=self.dsb_detect_margin.value(),
             post_exit_thresh=self.dsb_detect_exit.value(),
@@ -4937,19 +4906,19 @@ class MainWindow(QMainWindow):
     def on_browse_build_proj(self):
         path = QFileDialog.getExistingDirectory(self, "Select project folder", "")
         if path:
-            self.edit_build_proj_dir.setText(path)
+            self.edit_build_project_dir.setText(path)
 
     def on_build_start(self):
         if self.thread_build is not None:
             return
 
-        proj_dir = self.edit_build_proj_dir.text().strip()
-        if not proj_dir:
+        project_dir = self.edit_build_project_dir.text().strip()
+        if not project_dir:
             QMessageBox.warning(self, "Build", "Project directory is empty.")
             return
 
-        if not Path(proj_dir).exists():
-            QMessageBox.warning(self, "Build", f"Project directory not found: {proj_dir}")
+        if not Path(project_dir).exists():
+            QMessageBox.warning(self, "Build", f"Project directory not found: {project_dir}")
             return
 
         # 取得 buildtool 目錄（相對於當前腳本）
@@ -4959,7 +4928,7 @@ class MainWindow(QMainWindow):
             return
 
         cfg = BuildConfig(
-            proj_dir=proj_dir,
+            project_dir=project_dir,
             build_tool_dir=str(build_tool_dir),
             config_name=self.combo_build_cfg.currentText(),
             do_clean=self.chk_build_clean.isChecked()
@@ -5063,15 +5032,15 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(0)
 
     def update_srec_path(self):
-        proj = self.edit_build_proj_dir.text().strip()
+        project_dir = self.edit_build_project_dir.text().strip()
         cfg = self.combo_build_cfg.currentText().strip() or "Debug"
         
-        if not proj:
+        if not project_dir:
             self.edit_flash_srec.setText("")
             return
             
         # Assumption: output is at <PROJ>/<CFG>/<TARGET>.srec
-        srec = Path(proj) / cfg / "glove_mlp_rebuild.srec"
+        srec = Path(project_dir) / cfg / "glove_mlp_rebuild.srec"
         self.edit_flash_srec.setText(str(srec))
         self.edit_autobuild_flash_srec.setText(str(srec))
 
@@ -5162,7 +5131,7 @@ class MainWindow(QMainWindow):
         
         cfg = FlashConfig(
             srec_path=srec,
-            com_port=port,
+            serial_port=port,
             tool_dir=str(build_tool_dir)
         )
         

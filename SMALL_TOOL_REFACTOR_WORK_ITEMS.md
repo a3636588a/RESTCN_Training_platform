@@ -161,7 +161,7 @@
 
 | 類型 | 欄位／資料 | 原因 |
 |---|---|---|
-| `DetectionConfig` | `port`、`baud`、`model_path`、`meta_path` | 啟動前由 UI／CLI 指定，執行期間不應改變。 |
+| `DetectionConfig` | `serial_port`、`baud`、`model_path`、`metadata_path` | 啟動前由 UI／CLI 指定，執行期間不應改變。 |
 | `DetectionConfig` | `print_proba`、`use_manual_holdavg`、`enable_gain_map` | Boolean feature switch，屬於本次操作的固定規則。 |
 | `DetectionConfig` | Post-process、Manual Hold、Gain reference 與 clamp 參數 | 用來定義推論規則，不是執行中產生的結果。 |
 | `DetectionRuntimeState` | `current_base_map`、`current_hold_map` | 由 UART／CSV sample 持續更新，只對單次 run 有效。 |
@@ -193,3 +193,26 @@
 - 補上現行 module 責任、Training／Detection flow、非 UI API 範例與標準輸出。
 - 明確記錄 Config validation、Runtime State 隔離、取消與 resource cleanup 規則。
 - 保留舊版與 Refactor module 名稱對照，方便既有使用者更新 import。
+
+## 第八階段：Config 與跨模組欄位命名統一
+
+| 修改前 | 修改後 | 適用範圍 |
+|---|---|---|
+| `out_model_path` | `output_model_path` | `TrainingConfig` 與 Trainer。 |
+| `out_meta_path`／`meta_path` | `output_metadata_path`／`metadata_path` | Training、Detection、Codegen 與 TinyOL。 |
+| `outdir`／`out_dir` | `output_dir` | Gencode Config、operation 與 result payload。 |
+| `proj_dir`／`*_proj_dir` | `project_dir`／`*_project_dir` | Build 與 Auto Build。 |
+| `port`／`com_port` | `serial_port` | Detection、TinyOL UART 與 Flash。 |
+
+- `CodegenConfig`、`BuildConfig`、`FlashConfig` 集中到 `tool_operations.py`，讓非 UI caller 可直接建立完整 Config。
+- 舊欄位保留唯讀 property，提供讀取相容；專案內建構與存取統一使用新名稱。
+- Trainer 回傳的內部 dictionary 同步使用 `metadata_path`、`validation_accuracy` 與 `training_time_seconds`。
+- `AutoBuildConfig` 補上流程既有使用、但原先未宣告的 `auto_cleanup` Boolean 欄位。
+- 所有公開 Config path 統一接受 `str`；需要 filesystem 操作時再由 implementation 轉成 `Path`。
+
+## 第九階段：Tool Operations 模組責任確認
+
+- 保留 `tool_operations.py`，集中 Codegen、Build、Flash 的 Config、operation 與共用 process lifecycle。
+- 使用 `CodegenConfig` 與 `codegen_run_from_config()`，名稱與既有 Codegen 用語一致。
+- UI 直接 import `tool_operations`；此 module 擁有實際流程，不是單純轉接層。
+- 移除 `gencode_api.py`，避免 module 名稱讓人誤以為只負責 Codegen。

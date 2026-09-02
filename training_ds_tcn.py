@@ -116,7 +116,7 @@ def training_run_ds_tcn(
     log_fn(f"[TRAIN_DS_TCN] Data Loaded: {X_win.shape}, Var: {X_var.shape}, Classes: {num_classes}")
     log_fn(f"[TRAIN] X_shape: {X_win.shape}")
     log_fn(f"[TRAIN] num_classes: {num_classes}")
-    log_fn(f"[TRAIN] num_files: {len(list(cfg.data_dir.glob('*.csv'))) if cfg.data_dir.is_dir() else 0}")
+    log_fn(f"[TRAIN] num_files: {len(list(folder.glob('*.csv'))) if folder.is_dir() else 0}")
 
     file_labels = []
     valid_files = []
@@ -212,10 +212,10 @@ def training_run_ds_tcn(
     # this boundary to keep interrupted weights out of the published artifacts.
     training_raise_if_cancelled(stop_event)
 
-    out_path = cfg.out_model_path
+    out_path = cfg.output_model_path
     if out_path.lower().endswith(".pkl"):
         out_path = out_path[:-4] + ".keras"
-        log_fn(f"Note: Adjusting model extension for Keras: {cfg.out_model_path} -> {out_path}")
+        log_fn(f"Note: Adjusting model extension for Keras: {cfg.output_model_path} -> {out_path}")
     model.save(out_path)
 
     meta = {
@@ -231,9 +231,9 @@ def training_run_ds_tcn(
         "slope_factor": cfg.slope_factor,
         "flags": {"use_raw": True, "use_delta": True},
     }
-    joblib.dump(meta, cfg.out_meta_path)
+    joblib.dump(meta, cfg.output_metadata_path)
     log_fn(f"[TRAIN] Saved model: {out_path}")
-    log_fn(f"[TRAIN] Saved labels: {cfg.out_meta_path}")
+    log_fn(f"[TRAIN] Saved labels: {cfg.output_metadata_path}")
 
     y_pred_probs = model.predict([X_win_val, X_var_val, X_mean_val], verbose=0)
     y_pred = np.argmax(y_pred_probs, axis=1)
@@ -277,19 +277,19 @@ def training_run_ds_tcn(
     log_fn(f"[TRAIN] training_time: {training_time}")
     report_path = None
     try:
-        report_path = training_plot_results(history, y_true, y_pred, cfg.id_to_name, cfg.out_model_path)
+        report_path = training_plot_results(history, y_true, y_pred, cfg.id_to_name, cfg.output_model_path)
         log_fn("[TRAIN] Graphical report saved as training_report.png")
     except Exception as e:
         log_fn(f"[WARN] Failed to save training report plot: {e}")
 
     return {
         "model_path": out_path,
-        "meta_path": cfg.out_meta_path,
-        "accuracy": history.history["val_accuracy"][-1],
+        "metadata_path": cfg.output_metadata_path,
+        "validation_accuracy": history.history["val_accuracy"][-1],
         "history": history.history,
         "report": report,
         "report_path": report_path,
-        "training_time": training_time,
+        "training_time_seconds": training_time,
     }
 
 

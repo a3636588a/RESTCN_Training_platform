@@ -46,7 +46,7 @@ gesture_tool_ui.py
 | `detection_validation.py` | 純 Detection Config 驗證，不開啟 UART 或載入 Model。 |
 | `detection_contracts.py` | `ModelPrediction` 與 `DetectionResult`。 |
 | `detection_model.py` | Model／Metadata 載入、Sensor Buffer、Feature 與 `predict()`。 |
-| `tool_operations.py` | Codegen、Build、Flash 與 child process lifecycle。 |
+| `tool_operations.py` | Codegen、Build、Flash Config、operation 與 child process lifecycle。 |
 | `gesture_tool_ui.spec` | PyInstaller 打包設定。 |
 
 完整重構階段、命名對照與驗收條件請參考 [`SMALL_TOOL_REFACTOR_WORK_ITEMS.md`](SMALL_TOOL_REFACTOR_WORK_ITEMS.md)。
@@ -104,14 +104,13 @@ flowchart TD
 ### 4.2 非 UI 使用方式
 
 ```python
-import pathlib
 import threading
 
 from training_api import TrainingConfig, training_run_from_config
 from training_validation import training_validate_config
 
 config = TrainingConfig(
-    data_dir=pathlib.Path("dataset"),
+    data_dir="dataset",
     label_defs=[
         {"id": 0, "prefix": "idle", "name": "Idle"},
         {"id": 1, "prefix": "ok", "name": "OK"},
@@ -121,8 +120,8 @@ config = TrainingConfig(
     window_step=2,
     epochs=100,
     batch_size=32,
-    out_model_path="output/gesture_model.keras",
-    out_meta_path="output/gesture_model_meta.pkl",
+    output_model_path="output/gesture_model.keras",
+    output_metadata_path="output/gesture_model_meta.pkl",
 )
 
 issues = training_validate_config(config)
@@ -181,7 +180,7 @@ Detection 將固定設定與執行中狀態分開：
 
 | Owner | 內容 |
 |---|---|
-| `DetectionConfig` | COM port、baud、Model／Metadata path、Boolean switch、Post-process、Manual Hold 與 Gain 規則。 |
+| `DetectionConfig` | Serial port、baud、Model／Metadata path、Boolean switch、Post-process、Manual Hold 與 Gain 規則。 |
 | `DetectionRuntimeState` | 本次執行產生的 baseline、hold、gain map 與 gain ready 狀態。 |
 | `_DetectionSession` | row counter、Stable Gesture latch 與 Dynamic Gesture sequence。 |
 
@@ -214,8 +213,8 @@ flowchart TD
 
 | 分類 | 欄位 |
 |---|---|
-| UART | `port`、`baud` |
-| Model | `model_path`、`meta_path`、`post_slope_factor` |
+| UART | `serial_port`、`baud` |
+| Model | `model_path`、`metadata_path`、`post_slope_factor` |
 | Post-process | `post_alpha`、`post_margin`、`post_exit_thresh`、`post_tier_data`、`infer_stride` |
 | Output | `print_proba`、`dynamic_json_path` |
 | Hold | `use_manual_holdavg`、`manual_holdavg` |
@@ -230,10 +229,10 @@ from detection_api import DetectionConfig, detection_run_csv_from_config
 from detection_validation import detection_validate_config
 
 config = DetectionConfig(
-    port="COM6",
+    serial_port="COM6",
     baud=921600,
     model_path="output/gesture_model.keras",
-    meta_path="output/gesture_model_meta.pkl",
+    metadata_path="output/gesture_model_meta.pkl",
     post_alpha=0.2,
     post_margin=0.45,
     post_tier_data={},
@@ -305,11 +304,14 @@ payload
 
 UART 的 serial handle 無論正常取消或發生例外，都會在 operation 結束前關閉。
 
-## 6. Codegen／Build／Flash
+## 6. Gencode／Build／Flash
 
-`tool_operations.py` 提供不依賴 Qt 的 operation boundary：
+`tool_operations.py` 集中提供不依賴 Qt 的 Config 與 operation boundary：
 
 ```text
+CodegenConfig
+BuildConfig
+FlashConfig
 codegen_run_from_config()
 build_run_from_config()
 flash_run_from_config()
@@ -335,7 +337,7 @@ Detection Model 必須符合以下條件：
 ### Python 語法
 
 ```powershell
-python -m py_compile training_api.py training_contracts.py training_validation.py training_cnn.py training_ds_tcn.py detection_api.py detection_contracts.py detection_validation.py detection_model.py gesture_tool_ui.py tool_operations.py
+python -m py_compile training_api.py training_contracts.py training_validation.py training_cnn.py training_ds_tcn.py detection_api.py detection_contracts.py detection_validation.py detection_model.py tool_operations.py gesture_tool_ui.py
 ```
 
 ### 建議驗收順序

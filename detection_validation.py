@@ -25,7 +25,7 @@ def detection_validate_config(config: Any, source: str = "serial") -> Tuple[Dete
         ),)
 
     if selected_source == "serial":
-        port = str(getattr(config, "port", "") or "").strip()
+        port = str(getattr(config, "serial_port", getattr(config, "port", "")) or "").strip()
         if not port:
             issues.append(DetectionConfigIssue(code="port_empty", message="PORT is empty"))
         baud = getattr(config, "baud", 0)
@@ -35,11 +35,11 @@ def detection_validate_config(config: Any, source: str = "serial") -> Tuple[Dete
                 message=f"BAUD must be a positive integer: {baud}",
             ))
 
-    for field_name, code, label in (
-        ("model_path", "model_path_not_found", "MODEL_PATH"),
-        ("meta_path", "meta_path_not_found", "META_PATH"),
+    for field_name, legacy_field_name, code, label in (
+        ("model_path", "model_path", "model_path_not_found", "MODEL_PATH"),
+        ("metadata_path", "meta_path", "metadata_path_not_found", "METADATA_PATH"),
     ):
-        path_value = getattr(config, field_name, None)
+        path_value = getattr(config, field_name, getattr(config, legacy_field_name, None))
         if not path_value or not Path(path_value).exists():
             issues.append(DetectionConfigIssue(
                 code=code,

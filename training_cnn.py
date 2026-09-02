@@ -15,6 +15,7 @@ import json
 import pathlib
 import random
 import threading
+from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Any, Callable
 
 import numpy as np
@@ -28,14 +29,69 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.utils import class_weight
 import time
 import matplotlib.pyplot as plt
-from training_api import TrainingConfig
-from training_contracts import TrainingProgress, training_raise_if_cancelled
+from training_contracts import training_raise_if_cancelled
 try:
     import seaborn as sns
 except Exception:
     sns = None
 
-# 舊入口保留同一個 API config 實體，避免既有 script 立即失效。
+@dataclass
+class TrainingConfig:
+    """集中保存 CNN 與 DS-TCN 共用的 training 設定。"""
+
+    data_dir: pathlib.Path = pathlib.Path("./")
+    label_defs: Optional[List[Dict[str, Any]]] = None
+    channels: List[int] = None # e.g. [1, 2, 3, 4, 5, 6]
+    window_len: int = 40
+    window_step: int = 2
+
+    # --- Feature Engineering ---
+    slope_factor: float = 20.0  # Amplify the Delta (slope) channel
+
+    # CNN Params
+    batch_size: int = 32
+    epochs: int = 200
+    learning_rate: float = 0.001
+    label_smoothing: float = 0.08
+    early_stop_patience: int = 15
+    lr_patience: int = 10
+
+    # Metadata
+    out_model_path: str = "gesture_model_cnn_v1.h5" # Keras format
+    out_meta_path: str = "gesture_model_meta_cnn_v1.pkl"
+
+    # Augmentation Params
+    enable_augmentation: bool = True
+    aug_copies: int = 10
+    aug_delta_gain_min: float = 0.75
+    aug_delta_gain_max: float = 1.25
+    aug_span_gain_min: float = 0.8
+    aug_span_gain_max: float = 1.2
+    enable_offset_aug: bool = True
+    aug_offset_sigma: float = 30.0
+    aug_offset_clip: float = 100.0
+    enable_time_warp: bool = True
+    time_warp_min: float = 0.8
+    time_warp_max: float = 1.3
+
+    @property
+    def ch_list(self) -> List[int]:
+        return self.channels if self.channels else [1, 2, 3, 4, 5]
+
+    @property
+    def prefix_to_id(self) -> Dict[str, int]:
+        if self.label_defs:
+            return {str(row["prefix"]).lower().strip(): int(row["id"]) for row in self.label_defs if str(row.get("prefix","")).strip()}
+        return {str(i): i for i in range(10)}
+
+    @property
+    def id_to_name(self) -> Dict[int, str]:
+        if self.label_defs:
+            return {int(row["id"]): str(row.get("name", row.get("prefix", row["id"]))) for row in self.label_defs}
+        return {i: str(i) for i in range(10)}
+
+
+# 舊名稱保留給既有 script；新程式請使用完整名稱 TrainingConfig。
 TrainCfg = TrainingConfig
 
 def _resample_1d(sig: np.ndarray, new_len: int) -> np.ndarray:
@@ -137,13 +193,10 @@ def dataset_load_windows_from_csv(
 load_raw_windows_from_csv = dataset_load_windows_from_csv
 
 class UIProgressCallback(tf.keras.callbacks.Callback):
-    """Adapt Keras epoch logs to human-readable and structured callbacks."""
-
-    def __init__(self, log_fn, total_epochs, progress_fn=None):
+    def __init__(self, log_fn, total_epochs):
         super().__init__()
         self.log_fn = log_fn
         self.total_epochs = total_epochs
-        self.progress_fn = progress_fn
 
     def on_epoch_end(self, epoch, logs=None):
         if logs:
@@ -156,15 +209,6 @@ class UIProgressCallback(tf.keras.callbacks.Callback):
             msg = f"Epoch {epoch+1:3d}/{self.total_epochs} | acc={acc:.4f}, val_acc={val_acc:.4f}, loss={loss:.4f}, val_loss={l.get('val_loss', 0):.4f}"
             self.log_fn(msg)
             if hasattr(self.log_fn, 'flush'): self.log_fn.flush()
-            if self.progress_fn is not None:
-                self.progress_fn(TrainingProgress(
-                    epoch=epoch + 1,
-                    total_epochs=self.total_epochs,
-                    loss=float(loss),
-                    accuracy=float(acc),
-                    validation_loss=float(l.get('val_loss', 0)),
-                    validation_accuracy=float(val_acc),
-                ))
 
 def _cnn_build_squeeze_excitation_block(input_tensor, ratio=8):
     """
@@ -181,12 +225,7 @@ def _cnn_build_squeeze_excitation_block(input_tensor, ratio=8):
     return layers.Multiply()([input_tensor, se])
 
 
-def training_run_cnn(
-    cfg: TrainingConfig,
-    log_fn: Callable[[str], None] = None,
-    stop_event: threading.Event = None,
-    progress_fn: Optional[Callable[[TrainingProgress], None]] = None,
-):
+def training_run_cnn(cfg: TrainingConfig, log_fn: Callable[[str], None] = None, stop_event: threading.Event = None):
     """依設定執行 CNN training；取消時不發布 artifact。"""
 
     if log_fn is None:
@@ -344,7 +383,7 @@ def training_run_cnn(
     callbacks = [
         tf.keras.callbacks.EarlyStopping(patience=cfg.early_stop_patience, restore_best_weights=True),
         tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=cfg.lr_patience, min_lr=1e-6, verbose=1),
-        UIProgressCallback(log_fn, cfg.epochs, progress_fn)
+        UIProgressCallback(log_fn, cfg.epochs)
     ]
     
     if stop_event:
@@ -464,9 +503,8 @@ def training_run_cnn(
     log_fn(f"[TRAIN] training_time: {training_time}")
     
     # --- Graphical Report ---
-    report_path = None
     try:
-        report_path = training_plot_results(history, y_true, y_pred, cfg.id_to_name, cfg.out_model_path)
+        training_plot_results(history, y_true, y_pred, cfg.id_to_name, cfg.out_model_path)
         log_fn(f"[TRAIN] Graphical report saved as training_report.png")
     except Exception as e:
         log_fn(f"[TRAIN] [WARN] Failed to generate graphical report: {e}")
@@ -477,7 +515,6 @@ def training_run_cnn(
         "accuracy": history.history['val_accuracy'][-1],
         "history": history.history,
         "report": report,
-        "report_path": report_path,
         "training_time": training_time,
     }
 
@@ -539,7 +576,6 @@ def training_plot_results(history, y_true, y_pred, id_to_name, model_path):
     report_path = pathlib.Path(model_path).parent / "training_report.png"
     plt.savefig(str(report_path))
     plt.close()
-    return str(report_path)
 
 if __name__ == "__main__":
     # Example usage (usually called from UI)

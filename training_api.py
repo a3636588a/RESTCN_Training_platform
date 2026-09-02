@@ -1,6 +1,5 @@
 """Common training entry point shared by the GUI and non-UI callers."""
 
-import pathlib
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -14,9 +13,9 @@ __all__ = ["TrainingConfig", "training_run_from_config"]
 class TrainingConfig:
     """Configuration shared by every training backbone and external caller."""
 
-    data_dir: pathlib.Path = pathlib.Path("./")
+    data_dir: str = "."
     label_defs: Optional[List[Dict[str, Any]]] = None
-    channels: List[int] = None
+    channels: Optional[List[int]] = None
     window_len: int = 40
     window_step: int = 2
 
@@ -29,8 +28,8 @@ class TrainingConfig:
     early_stop_patience: int = 15
     lr_patience: int = 10
 
-    out_model_path: str = "gesture_model_cnn_v1.h5"
-    out_meta_path: str = "gesture_model_meta_cnn_v1.pkl"
+    output_model_path: str = "gesture_model_cnn_v1.h5"
+    output_metadata_path: str = "gesture_model_meta_cnn_v1.pkl"
 
     enable_augmentation: bool = True
     aug_copies: int = 10
@@ -68,10 +67,20 @@ class TrainingConfig:
             }
         return {index: str(index) for index in range(10)}
 
+    # Read-only aliases keep existing integrations working while all new
+    # callers use the same full path terminology as the result contracts.
+    @property
+    def out_model_path(self) -> str:
+        return self.output_model_path
+
+    @property
+    def out_meta_path(self) -> str:
+        return self.output_metadata_path
+
 
 def _training_resolve_model_path(config) -> str:
     """Mirror legacy trainer extension handling when normalizing old results."""
-    model_path = str(config.out_model_path)
+    model_path = str(config.output_model_path)
     if model_path.lower().endswith(".pkl"):
         return model_path[:-4] + ".keras"
     if not model_path.lower().endswith((".h5", ".keras")):
@@ -133,12 +142,24 @@ def training_run_from_config(
         status="completed",
         backbone=selected_backbone,
         model_path=str(raw_result.get("model_path") or _training_resolve_model_path(config)),
-        metadata_path=str(raw_result.get("meta_path") or config.out_meta_path),
+        metadata_path=str(
+            raw_result.get("metadata_path")
+            or raw_result.get("meta_path")
+            or config.output_metadata_path
+        ),
         report_path=raw_result.get("report_path"),
         top_1_accuracy=report.get("accuracy"),
         precision=macro_average.get("precision"),
         recall=macro_average.get("recall"),
         f1_score=macro_average.get("f1-score"),
-        validation_accuracy=raw_result.get("accuracy"),
-        training_time_seconds=raw_result.get("training_time"),
+        validation_accuracy=(
+            raw_result.get("validation_accuracy")
+            if "validation_accuracy" in raw_result
+            else raw_result.get("accuracy")
+        ),
+        training_time_seconds=(
+            raw_result.get("training_time_seconds")
+            if "training_time_seconds" in raw_result
+            else raw_result.get("training_time")
+        ),
     )
