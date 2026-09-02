@@ -29,7 +29,7 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.utils import class_weight
 import time
 import matplotlib.pyplot as plt
-from training_contracts import training_raise_if_cancelled
+from training_contracts import TrainingProgress, training_raise_if_cancelled
 try:
     import seaborn as sns
 except Exception:
@@ -193,10 +193,18 @@ def dataset_load_windows_from_csv(
 load_raw_windows_from_csv = dataset_load_windows_from_csv
 
 class UIProgressCallback(tf.keras.callbacks.Callback):
-    def __init__(self, log_fn, total_epochs):
+    """將 Keras Epoch logs 同時轉成文字與共用 TrainingProgress。"""
+
+    def __init__(
+        self,
+        log_fn: Callable[[str], None],
+        total_epochs: int,
+        progress_fn: Optional[Callable[[TrainingProgress], None]] = None,
+    ):
         super().__init__()
         self.log_fn = log_fn
         self.total_epochs = total_epochs
+        self.progress_fn = progress_fn
 
     def on_epoch_end(self, epoch, logs=None):
         if logs:
@@ -209,6 +217,16 @@ class UIProgressCallback(tf.keras.callbacks.Callback):
             msg = f"Epoch {epoch+1:3d}/{self.total_epochs} | acc={acc:.4f}, val_acc={val_acc:.4f}, loss={loss:.4f}, val_loss={l.get('val_loss', 0):.4f}"
             self.log_fn(msg)
             if hasattr(self.log_fn, 'flush'): self.log_fn.flush()
+            if self.progress_fn is not None:
+                # Keras 的 epoch 是 zero-based；公開 API 使用較直觀的 one-based epoch。
+                self.progress_fn(TrainingProgress(
+                    epoch=epoch + 1,
+                    total_epochs=self.total_epochs,
+                    loss=float(loss),
+                    accuracy=float(acc),
+                    validation_loss=float(l.get('val_loss', 0)),
+                    validation_accuracy=float(val_acc),
+                ))
 
 def _cnn_build_squeeze_excitation_block(input_tensor, ratio=8):
     """
@@ -225,7 +243,12 @@ def _cnn_build_squeeze_excitation_block(input_tensor, ratio=8):
     return layers.Multiply()([input_tensor, se])
 
 
-def training_run_cnn(cfg: TrainingConfig, log_fn: Callable[[str], None] = None, stop_event: threading.Event = None):
+def training_run_cnn(
+    cfg: TrainingConfig,
+    log_fn: Callable[[str], None] = None,
+    stop_event: threading.Event = None,
+    progress_fn: Optional[Callable[[TrainingProgress], None]] = None,
+):
     """依設定執行 CNN training；取消時不發布 artifact。"""
 
     if log_fn is None:
@@ -284,7 +307,9 @@ def training_run_cnn(cfg: TrainingConfig, log_fn: Callable[[str], None] = None, 
     log_fn(f"[TRAIN_CNN] Data Loaded: {X_win.shape}, Var: {X_var.shape}, Classes: {num_classes}")
     log_fn(f"[TRAIN] X_shape: {X_win.shape}") # Aligned with MLP report
     log_fn(f"[TRAIN] num_classes: {num_classes}")
-    log_fn(f"[TRAIN] num_files: {len(list(cfg.data_dir.glob('*.csv'))) if cfg.data_dir.is_dir() else 0}")
+    # Public Config keeps paths serializable as str; filesystem operations use
+    # the normalized Path created at this operation boundary.
+    log_fn(f"[TRAIN] num_files: {len(list(folder.glob('*.csv'))) if folder.is_dir() else 0}")
     
     # Split by File (Stratified) to prevent data leakage
     log_fn("[TRAIN] Splitting data by file (stratified) to prevent leakage...")
@@ -383,7 +408,7 @@ def training_run_cnn(cfg: TrainingConfig, log_fn: Callable[[str], None] = None, 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(patience=cfg.early_stop_patience, restore_best_weights=True),
         tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=cfg.lr_patience, min_lr=1e-6, verbose=1),
-        UIProgressCallback(log_fn, cfg.epochs)
+        UIProgressCallback(log_fn, cfg.epochs, progress_fn)
     ]
     
     if stop_event:

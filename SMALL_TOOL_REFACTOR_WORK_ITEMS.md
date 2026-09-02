@@ -216,3 +216,6 @@
 - 使用 `CodegenConfig` 與 `codegen_run_from_config()`，名稱與既有 Codegen 用語一致。
 - UI 直接 import `tool_operations`；此 module 擁有實際流程，不是單純轉接層。
 - 移除 `gencode_api.py`，避免 module 名稱讓人誤以為只負責 Codegen。
+- 修正 CNN／DS-TCN 的 `progress_fn` contract，兩種 Backbone 都透過 `TrainingProgress` 回報每個 Epoch。
+- 修正 CNN 將 `TrainingConfig.data_dir` 的 `str` 直接當成 `Path` 使用，filesystem 操作統一改用 operation 內正規化的 `folder`。
+- 新增 `tests/test_training_api.py`，以 Default `TrainingConfig` 驗證 Backbone routing、Result、Progress 與 Cancellation contract。

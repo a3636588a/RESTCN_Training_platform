@@ -340,6 +340,12 @@ Detection Model 必須符合以下條件：
 python -m py_compile training_api.py training_contracts.py training_validation.py training_cnn.py training_ds_tcn.py detection_api.py detection_contracts.py detection_validation.py detection_model.py tool_operations.py gesture_tool_ui.py
 ```
 
+### Training API 測試
+
+```powershell
+python -m unittest discover -s tests -p "test_training_api.py" -v
+```
+
 ### 建議驗收順序
 
 1. 使用 `training_validate_config()` 驗證合法與非法 Training Config。
