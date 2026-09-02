@@ -435,7 +435,7 @@ TEMPLATE_POST_H = '''#ifndef CNN_POSTPROCESS_H
 /* Default parameters based on UI backfill */
 #define CNN_POST_ALPHA_DEFAULT     {{ALPHA}}f
 #define CNN_POST_MARGIN_DEFAULT    {{MARGIN}}f
-#define CNN_POST_EXIT_DEFAULT      0.25f
+#define CNN_POST_EXIT_DEFAULT      {{EXIT_THRESH}}f
 
 /* Tiered Validation Settings */
 #define CNN_POST_STABLE_FAST       {{STABLE_FAST}}
@@ -855,6 +855,7 @@ def generate_cnn_lib(out_dir, tflite_path, std_base_a, std_hold_a, meta_path, mo
 
     post_h = TEMPLATE_POST_H.replace("{{ALPHA}}", f"{pcfg['alpha']:.2f}") \
                              .replace("{{MARGIN}}", f"{pcfg['margin']:.2f}") \
+                             .replace("{{EXIT_THRESH}}", f"{pcfg.get('exit_thresh', 0.25):.2f}") \
                              .replace("{{STABLE_FAST}}", str(pcfg.get('stable_fast', 0))) \
                              .replace("{{STABLE_NORMAL}}", str(pcfg['stable_normal'])) \
                              .replace("{{STABLE_RESTRICTED}}", str(pcfg['stable_restricted'])) \

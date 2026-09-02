@@ -1,6 +1,6 @@
-# RESTCN - UI_V6 訓練/偵測平台
+# RESTCN - Gesture Tool 訓練／偵測平台
 
-本專案提供 `ui_v6.py` 圖形介面，整合資料掃描、模型訓練、即時偵測與（後續）MCU codegen 流程。
+本專案提供 `gesture_tool_ui.py` 圖形介面，整合資料掃描、模型訓練、即時偵測與（後續）MCU codegen 流程。
 
 ## MCU 版本狀態
 - `mcu_cnn_v2`
@@ -70,13 +70,13 @@
 - 訓練 log 自動寫入你設定的輸出資料夾（plk）
 
 ## 2. 檔案對應
-- `ui_v6.py`
+- `gesture_tool_ui.py`
   - 主 UI（Train / Detect / TinyOL / Codegen）
-- `train_gesture_cnn_v1.py`
+- `training_cnn.py`
   - 原本 1D-CNN 訓練器
-- `train_gesture_ds_tcn_v1.py`
+- `training_ds_tcn.py`
   - 新增 DS-CNN + 輕量 TCN 訓練器
-- `detect_gesture_universal_manual_holdavg_v5.py`
+- `detection_model.py`
   - 即時偵測主程式（UI Detect 會呼叫）
 
 ## 3. 網路架構
@@ -132,7 +132,7 @@
 ## 4. 如何訓練
 1. 啟動 UI
 ```powershell
-& C:\Users\USE\miniconda3\python.exe C:\Users\USE\Desktop\SEAN_CODE\RESTCN\ui_v6.py
+& C:\Users\USE\miniconda3\python.exe C:\Users\USE\Desktop\SEAN_CODE\RESTCN\gesture_tool_ui.py
 ```
 
 2. Train 頁面設定
@@ -342,17 +342,17 @@ MCU 匯出：
 - 若以速度優先：可再做一個更純的 `ds_cnn_fast` backbone 比對。
 
 ## 9. 打包指令
-目前使用 PyInstaller 打包 `ui_v6.py`：
+目前使用 PyInstaller 打包 `gesture_tool_ui.py`：
 
 ```powershell
-& "C:/Users/USE/miniconda3/envs/mlp/python.exe" -m PyInstaller --noconfirm ui_v6.spec
+& "C:/Users/USE/miniconda3/envs/mlp/python.exe" -m PyInstaller --noconfirm gesture_tool_ui.spec
 ```
 
 打包完成後輸出位置：
 - `dist\ML_Station.exe`
 
 補充：
-- `ui_v6.spec` 已設定 EXE 名稱為 `ML_Station`
+- `gesture_tool_ui.spec` 已設定 EXE 名稱為 `ML_Station`
 - 主視窗標題也已改為 `ML_Station`
 
 ---
@@ -393,10 +393,10 @@ MCU 匯出：
 
 ## 12. TinyOL 平台與板端核心功能重構與 Bug 修正記錄
 
-本次更新涵蓋了 PC 端 `ui_v6` 介面、`gen_cnn_lib` 程式碼生成工具，以及板端 `sil_app_tinyol.c` 核心訓練流程的深度優化，並解決了導致板端無法訓練的重大初始化 Bug：
+本次更新涵蓋了 PC 端 `gesture_tool_ui` 介面、`gen_cnn_lib` 程式碼生成工具，以及板端 `sil_app_tinyol.c` 核心訓練流程的深度優化，並解決了導致板端無法訓練的重大初始化 Bug：
 
-### 12.1 PC 平台端優化 (ui_v6.py & gen_cnn_lib.py)
-* **新增 TinyOL 專用資料夾欄位**：在 `ui_v6.py` 的 Gen Code (CNN) 頁面新增了 TinyOL 專用路徑設定，防止系統抓錯預設訓練資料夾。
+### 12.1 PC 平台端優化 (`gesture_tool_ui.py` 與 `gen_cnn_lib.py`)
+* **新增 TinyOL 專用資料夾欄位**：在 `gesture_tool_ui.py` 的 Gen Code (CNN) 頁面新增了 TinyOL 專用路徑設定，防止系統抓錯預設訓練資料夾。
 * **最佳資料樣本篩選**：修改 `gen_cnn_lib.py`，使 TinyOL default data 導出時，自動為每個 label 挑選 1 個最佳的 CSV 檔，且只截取其尾段的穩定資料。
 * **無重疊滑動視窗**：將原先步進 (step) 式的資料切窗邏輯調整為無重疊切窗，提高資料特徵代表性。
 * **基準格式輸出整合**：將 base 與 hold 改為共用一組格式輸出，並於 `gen_cnn_lib.py` 自動生成 `tinyol_default_windows.h/.c` 及對應的 manifest。
