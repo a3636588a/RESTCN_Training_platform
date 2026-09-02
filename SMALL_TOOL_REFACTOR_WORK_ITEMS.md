@@ -185,3 +185,11 @@
 - Detection API 不讀寫 `detection_model.py` 的 configuration／gain globals。
 - `RealtimeGestureDetector()` 無參數建構仍保留，供舊版單檔入口相容使用。
 - Model architecture、Metadata 格式、`ModelPrediction` 與公開 run API 簽章維持不變。
+
+## 第七階段：README Refactor 文件
+
+- 將 README 改為目前乾淨分支的專案入口文件。
+- 移除已不屬於此分支的 MCU workspace 狀態、歷史 Bug 長篇紀錄與重複 TinyOL 內容。
+- 補上現行 module 責任、Training／Detection flow、非 UI API 範例與標準輸出。
+- 明確記錄 Config validation、Runtime State 隔離、取消與 resource cleanup 規則。
+- 保留舊版與 Refactor module 名稱對照，方便既有使用者更新 import。
