@@ -24,15 +24,15 @@ from sklearn.utils import class_weight
 from tensorflow.keras import layers, models
 
 import training_cnn as cnn_trainer
+from training_api import TrainingConfig
 from training_contracts import TrainingProgress, training_raise_if_cancelled
 
 
-TrainingConfig = cnn_trainer.TrainingConfig
 UIProgressCallback = cnn_trainer.UIProgressCallback
 dataset_load_windows_from_csv = cnn_trainer.dataset_load_windows_from_csv
 training_plot_results = cnn_trainer.training_plot_results
 
-# 舊名稱只作為相容入口，所有名稱都指向 CNN module 的共用實體與 loader。
+# 舊名稱只作為相容入口，Config 永遠指向 training_api 的共用實體。
 TrainCfg = TrainingConfig
 load_raw_windows_from_csv = dataset_load_windows_from_csv
 

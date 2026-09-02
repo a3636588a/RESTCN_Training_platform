@@ -15,8 +15,7 @@ import json
 import pathlib
 import random
 import threading
-from dataclasses import dataclass
-from typing import List, Optional, Tuple, Dict, Any, Callable
+from typing import Callable, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -29,69 +28,14 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.utils import class_weight
 import time
 import matplotlib.pyplot as plt
+from training_api import TrainingConfig
 from training_contracts import TrainingProgress, training_raise_if_cancelled
 try:
     import seaborn as sns
 except Exception:
     sns = None
 
-@dataclass
-class TrainingConfig:
-    """集中保存 CNN 與 DS-TCN 共用的 training 設定。"""
-
-    data_dir: pathlib.Path = pathlib.Path("./")
-    label_defs: Optional[List[Dict[str, Any]]] = None
-    channels: List[int] = None # e.g. [1, 2, 3, 4, 5, 6]
-    window_len: int = 40
-    window_step: int = 2
-
-    # --- Feature Engineering ---
-    slope_factor: float = 20.0  # Amplify the Delta (slope) channel
-
-    # CNN Params
-    batch_size: int = 32
-    epochs: int = 200
-    learning_rate: float = 0.001
-    label_smoothing: float = 0.08
-    early_stop_patience: int = 15
-    lr_patience: int = 10
-
-    # Metadata
-    out_model_path: str = "gesture_model_cnn_v1.h5" # Keras format
-    out_meta_path: str = "gesture_model_meta_cnn_v1.pkl"
-
-    # Augmentation Params
-    enable_augmentation: bool = True
-    aug_copies: int = 10
-    aug_delta_gain_min: float = 0.75
-    aug_delta_gain_max: float = 1.25
-    aug_span_gain_min: float = 0.8
-    aug_span_gain_max: float = 1.2
-    enable_offset_aug: bool = True
-    aug_offset_sigma: float = 30.0
-    aug_offset_clip: float = 100.0
-    enable_time_warp: bool = True
-    time_warp_min: float = 0.8
-    time_warp_max: float = 1.3
-
-    @property
-    def ch_list(self) -> List[int]:
-        return self.channels if self.channels else [1, 2, 3, 4, 5]
-
-    @property
-    def prefix_to_id(self) -> Dict[str, int]:
-        if self.label_defs:
-            return {str(row["prefix"]).lower().strip(): int(row["id"]) for row in self.label_defs if str(row.get("prefix","")).strip()}
-        return {str(i): i for i in range(10)}
-
-    @property
-    def id_to_name(self) -> Dict[int, str]:
-        if self.label_defs:
-            return {int(row["id"]): str(row.get("name", row.get("prefix", row["id"]))) for row in self.label_defs}
-        return {i: str(i) for i in range(10)}
-
-
-# 舊名稱保留給既有 script；新程式請使用完整名稱 TrainingConfig。
+# 舊名稱只保留為同一 Class 的相容 alias，不維護第二套 Config。
 TrainCfg = TrainingConfig
 
 def _resample_1d(sig: np.ndarray, new_len: int) -> np.ndarray:
@@ -604,5 +548,5 @@ def training_plot_results(history, y_true, y_pred, id_to_name, model_path):
 
 if __name__ == "__main__":
     # Example usage (usually called from UI)
-    cfg = TrainingConfig(data_dir=pathlib.Path("./data"))
+    cfg = TrainingConfig(data_dir="./data")
     training_run_cnn(cfg)

@@ -6,6 +6,7 @@ from unittest.mock import patch
 import training_api
 import training_cnn
 import training_contracts
+import training_ds_tcn
 import training_validation
 
 
@@ -26,6 +27,12 @@ class TrainingApiTest(unittest.TestCase):
         self.assertEqual(self.config.epochs, 200)
         self.assertEqual(self.config.output_model_path, "gesture_model_cnn_v1.h5")
         self.assertEqual(self.config.output_metadata_path, "gesture_model_meta_cnn_v1.pkl")
+
+    def test_all_trainers_share_the_api_config_class(self):
+        self.assertIs(training_cnn.TrainingConfig, training_api.TrainingConfig)
+        self.assertIs(training_ds_tcn.TrainingConfig, training_api.TrainingConfig)
+        self.assertIs(training_cnn.TrainCfg, training_api.TrainingConfig)
+        self.assertIs(training_ds_tcn.TrainCfg, training_api.TrainingConfig)
 
     def test_default_config_validation_reports_missing_labels(self):
         issues = training_validation.training_validate_config(self.config)
