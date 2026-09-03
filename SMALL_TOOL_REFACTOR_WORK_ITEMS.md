@@ -220,3 +220,4 @@
 - 修正 CNN 將 `TrainingConfig.data_dir` 的 `str` 直接當成 `Path` 使用，filesystem 操作統一改用 operation 內正規化的 `folder`。
 - 新增 `tests/test_training_api.py`，以 Default `TrainingConfig` 驗證 Backbone routing、Result、Progress 與 Cancellation contract。
 - 移除 CNN 內重複的 `TrainingConfig` 定義；CNN、DS-TCN、UI 與外部 caller 統一使用 `training_api.TrainingConfig`。
+- Training API test 補入專案根目錄 import boundary，同時支援直接執行與 `unittest discover`。

@@ -1,7 +1,15 @@
 """Training common API contract tests using the default configuration."""
 
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+# 直接執行此檔時，Python 只加入 tests 目錄；補入專案根目錄，讓直接執行
+# 與 unittest discover 使用完全相同的 production module。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import training_api
 import training_cnn

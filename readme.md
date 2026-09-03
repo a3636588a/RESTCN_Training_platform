@@ -344,6 +344,7 @@ python -m py_compile training_api.py training_contracts.py training_validation.p
 
 ```powershell
 python -m unittest discover -s tests -p "test_training_api.py" -v
+python tests/test_training_api.py
 ```
 
 ### 建議驗收順序
