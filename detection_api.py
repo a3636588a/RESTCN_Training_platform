@@ -18,6 +18,7 @@ import detection_model as detect
 __all__ = [
     "DetectionConfig",
     "DetectionRuntimeState",
+    "detection_parse_serial_line",
     "detection_run_serial_from_config",
     "detection_run_csv_from_config",
 ]
@@ -25,28 +26,34 @@ __all__ = [
 
 @dataclass
 class DetectionConfig:
-    """Configuration shared by serial and CSV detection operations."""
+    """UART 與 CSV Detect 共用的固定輸入；執行期間不應修改。"""
+    ########X#########For CNN Use#########################
+    ######################################################
+    serial_port: str  # UART 裝置名稱，例如 COM6；CSV Replay 不使用。
+    baud: int  # UART baud rate；CSV Replay 不使用。
+    model_path: str  # Keras／Joblib Model 檔案路徑。
+    metadata_path: str  # Training 產生的 Metadata，定義 Model 類型、Channel 與 Feature。
 
-    serial_port: str
-    baud: int
-    model_path: str
-    metadata_path: str
-    post_alpha: float
-    post_margin: float
-    post_tier_data: dict
-    post_exit_thresh: float
-    post_slope_factor: float
-    infer_stride: int
-    print_proba: bool
-    use_manual_holdavg: bool
-    manual_holdavg: Dict[int, int]
-    enable_gain_map: bool
-    std_baseline_a: Dict[int, int]
-    std_holdavg_a: Dict[int, int]
-    min_span_b: float
-    gain_clamp_min: float
-    gain_clamp_max: float
-    dynamic_json_path: str = "dynamic_gestures.json"
+    post_alpha: float  # Probability EWMA 權重，範圍 0～1；越大越偏重最新結果。
+    post_margin: float  # 切換 Active Label 時，新候選需領先目前 Label 的最小機率差。
+    post_tier_data: dict  # 各 Gesture Tier 的門檻、Stable Frames 與 Class ID 清單。
+    post_exit_thresh: float  # Active Label 低於此機率時回到 inactive 狀態。
+    post_slope_factor: float  # Metadata 缺少 slope_factor 時使用的推論倍率 fallback。
+    infer_stride: int  # UART 每累積幾筆有效 Raw Data 呼叫一次 predict；CSV Replay 會略過。
+    print_proba: bool  # 是否將各 Class 的預測機率寫入 log_fn。
+
+    use_manual_holdavg: bool  # 缺少即時 Hold 值時，是否允許使用 manual_holdavg。
+    manual_holdavg: Dict[int, int]  # Channel ID → 手動 Hold Average Sensor 值。
+    enable_gain_map: bool  # 是否依標準裝置與目前裝置的 Span 計算 Channel Gain。
+    std_baseline_a: Dict[int, int]  # Channel ID → 標準裝置 Baseline，供 Gain 計算。
+    std_holdavg_a: Dict[int, int]  # Channel ID → 標準裝置 Hold Average，供 Gain 計算。
+    min_span_b: float  # 目前裝置 Span 小於此值時不更新 Gain，避免除以過小數值。
+    gain_clamp_min: float  # Gain 下限，避免輸入被過度縮小。
+    gain_clamp_max: float  # Gain 上限，避免雜訊被過度放大。
+
+    dynamic_json_path: str = "dynamic_gestures.json"  # Dynamic Gesture sequence 設定檔。
+    ######################################################
+    ########X#########For CNN Use#########################
 
     # Compatibility aliases are intentionally read-only so one canonical field
     # remains responsible for serialization and new API documentation.
@@ -80,6 +87,42 @@ class _DetectionUpdate:
     stable_name: str
     stable_changed: bool
     dynamic_name: Optional[str]
+
+
+def detection_parse_serial_line(line: str):
+    """解析並驗證 MCU `$SIL...` UART 封包；無效或截斷資料回傳 ``None``。"""
+
+    line = line.strip()
+    if not line.startswith("$"):
+        return None
+    main = line.split("*", 1)[0]
+    parts = main.split(",")
+    if len(parts) < 5:
+        return None
+
+    try:
+        message = parts[0][1:]
+        count = int(parts[2])
+        channel_count = int(parts[3])
+        if channel_count < 0 or channel_count > 32:
+            return None
+
+        values = []
+        for raw_value in parts[4:]:
+            raw_value = raw_value.strip()
+            if not raw_value:
+                continue
+            try:
+                values.append(int(raw_value))
+            except ValueError:
+                break
+
+        # 截斷封包不能進入 Runtime State，否則 Channel 會錯位。
+        if len(values) < channel_count:
+            return None
+        return message, count, channel_count, values[:channel_count]
+    except (TypeError, ValueError):
+        return None
 
 
 class _DynamicMatcher:
@@ -212,7 +255,12 @@ class _CnnPostProcessor:
 
 
 class _DetectionSession:
-    """Own model, post-processing, and dynamic state for one detection run."""
+    """協調單次 Detect 的共用處理流程。
+
+    UART 與 CSV 都將解析後的 Sensor sample 交給此物件；它負責維護
+    Runtime State、更新 Gain、累積 Model Window、控制推論間隔，以及串接
+    Stable／Dynamic 後處理。Session 只屬於單次 run，不可跨 run 共用。
+    """
 
     def __init__(
         self,
@@ -224,6 +272,8 @@ class _DetectionSession:
     ):
         self.config = config
         self.detector = detector
+        # Runtime State 保存本次操作持續變動的 Base、Hold 與 Gain；固定設定
+        # 仍由 DetectionConfig 擁有，避免把執行狀態寫回使用者的 config。
         self.runtime_state = runtime_state
         self.log_fn = log_fn
         # JSON callers commonly provide numeric channel keys as strings. Keep
@@ -293,6 +343,14 @@ class _DetectionSession:
         timestamp: float,
         apply_config_stride: bool,
     ) -> Optional[_DetectionUpdate]:
+        """處理一筆完整 sample，並在符合推論條件時回傳 Detection Update。
+
+        每筆有效資料都會先更新 Runtime State 並送入 Model Window；
+        ``infer_stride`` 只控制呼叫 predict() 的頻率，不會丟棄 Sensor sample。
+        """
+
+        # Model 使用的每個 Channel 都必須同時具備 Row 與 Baseline，否則這筆
+        # 資料無法正規化，也不能安全放入 Model Window。
         if any(channel not in row_map or channel not in base_map for channel in self.detector.channels):
             return None
 
@@ -306,9 +364,12 @@ class _DetectionSession:
                     effective_hold[channel] = self.manual_holdavg[channel]
 
         state.current_hold_map.update(effective_hold)
+        # Gain 必須在 push_data() 前更新，確保這一筆資料與之後的 predict()
+        # 使用同一份校正狀態。
         self.update_gain_map()
         self.detector.push_data(row_map, state.current_base_map, effective_hold, state.gain_map)
 
+        # Stride 僅延後推論；上面的 push_data() 仍會接收每一筆有效輸入。
         self.row_counter += 1
         if apply_config_stride and self.row_counter % max(1, self.config.infer_stride) != 0:
             return None
@@ -476,7 +537,7 @@ def detection_run_serial_from_config(
                 continue
 
             try:
-                parsed = detect.detection_parse_serial_line(line)
+                parsed = detection_parse_serial_line(line)
                 if parsed is None:
                     continue
                 message, count, channel_count, values = parsed
@@ -581,7 +642,6 @@ def detection_run_csv_from_config(
             slope_factor=config.post_slope_factor,
             manual_holdavg=config.manual_holdavg,
         )
-        detector.predict_stride = 1
         runtime_state = DetectionRuntimeState(
             gain_map={int(channel): 1.0 for channel in detector.channels},
             current_base_map={

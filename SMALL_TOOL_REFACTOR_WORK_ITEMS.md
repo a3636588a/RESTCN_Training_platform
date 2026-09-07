@@ -221,3 +221,21 @@
 - 新增 `tests/test_training_api.py`，以 Default `TrainingConfig` 驗證 Backbone routing、Result、Progress 與 Cancellation contract。
 - 移除 CNN 內重複的 `TrainingConfig` 定義；CNN、DS-TCN、UI 與外部 caller 統一使用 `training_api.TrainingConfig`。
 - Training API test 補入專案根目錄 import boundary，同時支援直接執行與 `unittest discover`。
+- 移除 `detection_model.py` 內第二套 predict stride；推論頻率統一由 `DetectionConfig.infer_stride` 與 Detection API 控制。
+
+## Gain Map 使用者注意事項
+
+- 目前先保留既有 Gain Map 設定與計算行為，不調整 `DetectionConfig` 或演算法。
+- `span_input` 是目前裝置的實際量測跨度，計算方式為 `abs(hold_value - current_base)`。
+- `min_span_b` 是允許更新 Gain 的最低門檻，不會取代或覆寫 `span_input`。
+- 當 `span_input < min_span_b` 時，本次資料不更新 Gain；當跨度符合門檻時，仍以實際的 `span_input` 作為 Gain 計算分母。
+- 使用者應將 `min_span_b` 設為大於零且符合感測器雜訊範圍的數值，避免接近零的跨度造成 Gain 過度放大。
+
+## Detection Model 新版 API 專用化
+
+- `detection_model.py` 不再作為可單獨執行的 UART 程式，只保留 Model resource、Sensor Window、Feature 與 `predict()`。
+- 移除舊版 `main()`、COM／Model path Globals、Global Gain State 與重複的 `MajorityChain` 後處理。
+- `detection_parse_serial_line()` 搬到 `detection_api.py`，UART protocol parsing 不再由 Model module 負責。
+- `RealtimeGestureDetector` 必須由 Detection API 明確傳入 Model、Metadata、Slope 與 Manual Hold，不再暗中使用 module defaults。
+- UART lifecycle、固定設定與單次執行狀態分別由 `detection_api.py`、`DetectionConfig` 與 `DetectionRuntimeState` 負責。
+- UI 初始值留在 UI 層，只用來建立 `DetectionConfig`，不再由 Model module 提供。

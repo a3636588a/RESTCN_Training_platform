@@ -72,6 +72,14 @@ import detection_validation
 # =========================
 import detection_model as detect
 
+# UI 初始值只負責建立 DetectionConfig；Model module 不再保存使用者設定。
+_DEFAULT_DETECTION_MANUAL_HOLDAVG = {
+    1: 17254, 2: 20107, 3: 19845, 4: 19759, 5: 19427, 6: 15493,
+}
+_DEFAULT_DETECTION_STD_BASELINE = {
+    1: 15353, 2: 15366, 3: 15289, 4: 15429, 5: 15393, 6: 15197,
+}
+
 # =========================
 # Codegen tools
 # =========================
@@ -196,7 +204,7 @@ class TinyOlRecordWorker(QObject):
                 if not line:
                     continue
 
-                parsed = detect.detection_parse_serial_line(line)
+                parsed = detection_api.detection_parse_serial_line(line)
                 if parsed is None:
                     continue
                 msg, cnt, chn, vals = parsed
@@ -2079,11 +2087,11 @@ class MainWindow(QMainWindow):
         h_detect_csv.addWidget(self.btn_detect_replay_csv)
         f.addRow("", w_detect_csv)
 
-        self.edit_port = QLineEdit(getattr(detect, "PORT", "COM6"))
+        self.edit_port = QLineEdit("COM6")
         self.combo_baud = QComboBox()
         self.combo_baud.addItems(["115200", "230400", "460800", "921600", "1000000","1500000"])
 
-        self.edit_model = QLineEdit(str(getattr(detect, "MODEL_PATH", "gesture_model_v5.pkl")))
+        self.edit_model = QLineEdit("gesture_model_v5.pkl")
         self.btn_browse_model = QPushButton("Browse...")
 
         w_model = QWidget()
@@ -2092,7 +2100,7 @@ class MainWindow(QMainWindow):
         hm.addWidget(self.edit_model)
         hm.addWidget(self.btn_browse_model)
 
-        self.edit_meta = QLineEdit(str(getattr(detect, "META_PATH", "gesture_model_meta_v5.pkl")))
+        self.edit_meta = QLineEdit("gesture_model_meta_v5.pkl")
         self.btn_browse_meta = QPushButton("Browse...")
 
         w_meta = QWidget()
@@ -2107,7 +2115,7 @@ class MainWindow(QMainWindow):
         f.addRow("Meta:", w_meta)
 
         self.chk_print_proba = QCheckBox("Print proba / top5")
-        self.chk_print_proba.setChecked(bool(getattr(detect, "PRINT_PROBA", True)))
+        self.chk_print_proba.setChecked(True)
         f.addRow("", self.chk_print_proba)
 
         self.btn_detect_start = QPushButton("Start Detect")
@@ -2253,7 +2261,7 @@ class MainWindow(QMainWindow):
         vh = QVBoxLayout(g_hold)
 
         self.chk_use_manual = QCheckBox("Enable manual holdavg")
-        self.chk_use_manual.setChecked(bool(getattr(detect, "USE_MANUAL_HOLDAVG", True)))
+        self.chk_use_manual.setChecked(True)
         vh.addWidget(self.chk_use_manual)
 
         self.tbl_hold = QTableWidget(6, 2)
@@ -2264,7 +2272,7 @@ class MainWindow(QMainWindow):
 
         for i in range(6):
             self.tbl_hold.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            v = int(getattr(detect, "MANUAL_HOLDAVG", {}).get(i + 1, 0))
+            v = _DEFAULT_DETECTION_MANUAL_HOLDAVG.get(i + 1, 0)
             if v == 0 and i == 5: v = 17966 # default for CH6
             self.tbl_hold.setItem(i, 1, QTableWidgetItem(str(v)))
 
@@ -2275,7 +2283,7 @@ class MainWindow(QMainWindow):
         fg = QFormLayout(g_gain)
 
         self.chk_gain = QCheckBox("Enable gain map")
-        self.chk_gain.setChecked(bool(getattr(detect, "ENABLE_GAIN_MAP", True)))
+        self.chk_gain.setChecked(True)
 
         self.tbl_base_a = QTableWidget(6, 2)
         self.tbl_base_a.setHorizontalHeaderLabels(["CH", "STD_BASELINE_A"])
@@ -2287,8 +2295,8 @@ class MainWindow(QMainWindow):
         self.tbl_hold_a.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_hold_a.setMinimumHeight(215)
 
-        std_base = getattr(detect, "STD_BASELINE_A", {})
-        std_hold = getattr(detect, "STD_HOLDAVG_A", {})
+        std_base = _DEFAULT_DETECTION_STD_BASELINE
+        std_hold = _DEFAULT_DETECTION_MANUAL_HOLDAVG
         for i in range(6):
             self.tbl_base_a.setItem(i, 0, QTableWidgetItem(str(i + 1)))
             v_b = int(std_base.get(i + 1, 0))
@@ -2303,17 +2311,17 @@ class MainWindow(QMainWindow):
         self.dsb_min_span = NoWheelDoubleSpinBox()
         self.dsb_min_span.setDecimals(1)
         self.dsb_min_span.setRange(0, 999999)
-        self.dsb_min_span.setValue(float(getattr(detect, "MIN_SPAN_B", 500.0)))
+        self.dsb_min_span.setValue(300.0)
 
         self.dsb_gmin = NoWheelDoubleSpinBox()
         self.dsb_gmin.setDecimals(3)
         self.dsb_gmin.setRange(0.0, 10.0)
-        self.dsb_gmin.setValue(float(getattr(detect, "GAIN_CLAMP_MIN", 0.5)))
+        self.dsb_gmin.setValue(0.5)
 
         self.dsb_gmax = NoWheelDoubleSpinBox()
         self.dsb_gmax.setDecimals(3)
         self.dsb_gmax.setRange(0.0, 10.0)
-        self.dsb_gmax.setValue(float(getattr(detect, "GAIN_CLAMP_MAX", 2.5)))
+        self.dsb_gmax.setValue(2.5)
 
         fg.addRow("", self.chk_gain)
         fg.addRow("STD_BASELINE_A:", self.tbl_base_a)
@@ -2340,7 +2348,7 @@ class MainWindow(QMainWindow):
         g_active = QGroupBox("Active Model / Dataset")
         f_active = QFormLayout(g_active)
 
-        self.edit_tinyol_model = QLineEdit(str(getattr(detect, "MODEL_PATH", "gesture_model_v5.keras")))
+        self.edit_tinyol_model = QLineEdit("gesture_model_v5.keras")
         self.btn_tinyol_browse_model = QPushButton("Browse...")
         w_model = QWidget()
         h_model = QHBoxLayout(w_model)
@@ -2348,7 +2356,7 @@ class MainWindow(QMainWindow):
         h_model.addWidget(self.edit_tinyol_model)
         h_model.addWidget(self.btn_tinyol_browse_model)
 
-        self.edit_tinyol_meta = QLineEdit(str(getattr(detect, "META_PATH", "gesture_model_meta_v5.pkl")))
+        self.edit_tinyol_meta = QLineEdit("gesture_model_meta_v5.pkl")
         self.btn_tinyol_browse_meta = QPushButton("Browse...")
         w_meta = QWidget()
         h_meta = QHBoxLayout(w_meta)
@@ -2395,10 +2403,10 @@ class MainWindow(QMainWindow):
         self.lbl_tinyol_features = QLabel("--")
         self.lbl_tinyol_flags = QLabel("--")
         self.lbl_tinyol_scope = QLabel("Dense(64) + Dense(num_classes)")
-        self.edit_tinyol_port = QLineEdit(getattr(detect, "PORT", "COM6"))
+        self.edit_tinyol_port = QLineEdit("COM6")
         self.combo_tinyol_baud = QComboBox()
         self.combo_tinyol_baud.addItems(["115200", "230400", "460800", "921600", "1000000", "1500000"])
-        baud_index = self.combo_tinyol_baud.findText(str(getattr(detect, "BAUD", 921600)))
+        baud_index = self.combo_tinyol_baud.findText("921600")
         if baud_index >= 0:
             self.combo_tinyol_baud.setCurrentIndex(baud_index)
 

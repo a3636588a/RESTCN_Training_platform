@@ -14,210 +14,17 @@ detection_model.py
    - dn = d_mapped / span_mapped
    - 其中 span_mapped = abs(HOLDAVG - MOVBASE) * GAIN_MAP
 
-你只要確保：
-- MODEL_PATH / META_PATH 指向 v5 訓練輸出的檔案
-- PORT 改成你的 COM
+本模組只負責 Model resource、Sensor Window、Feature 與 predict()；
+UART、Config、Gain Runtime State 與後處理由 detection_api.py 擁有。
 """
 
-import time
-from collections import Counter, deque
-from typing import Dict, List, Optional, Tuple, Any
+from collections import deque
+from typing import Dict, List, Optional, Any
 
 import joblib
 import numpy as np
-import serial
 
 from detection_contracts import ModelPrediction
-
-# =========================
-# 使用者設定
-# =========================
-PORT = "COM6"      # TODO: 改成你的序列埠
-BAUD = 921600
-
-# ✅ 改成 v5 訓練輸出
-MODEL_PATH = "gesture_model_v5.pkl"
-META_PATH  = "gesture_model_meta_v5.pkl"
-
-# 多數決參數（你可調）
-CHAIN_LEN = 7
-CHAIN_MIN_MAJ = 5
-
-PRINT_PROBA = True
-
-# ---- 手動 HOLDAVG（若 UART 沒送 SILHOLD / SILHOLDAVG）----
-USE_MANUAL_HOLDAVG = True
-MANUAL_HOLDAVG = {
-    1: 17254,
-    2: 20107,
-    3: 19845,
-    4: 19759,
-    5: 19427,
-    6: 15493,
-}
-
-# ---- 手套A（標準）尺度（用於 Gain Mapping 計算 span_A）----
-# 注意：只用來計算 Gain，dn 不再用固定 spanA，而是用「span_mapped」
-STD_BASELINE_A = {
-    1: 15353,
-    2: 15366,
-    3: 15289,
-    4: 15429,
-    5: 15393,
-    6: 15197,
-}
-STD_HOLDAVG_A = MANUAL_HOLDAVG  # 你也可以改成你想用的標準 span
-
-# ---- 手套跨設備尺度對齊 (Gain Mapping) ----
-ENABLE_GAIN_MAP = True
-MIN_SPAN_B = 300.0      # 保護：B 的跨度太小不要用來算 gain（避免爆炸）
-GAIN_CLAMP_MIN = 0.5
-GAIN_CLAMP_MAX = 2.5
-
-# 每個 CH 的增益（B -> A），沒校正前預設 1.0
-GAIN_MAP: Dict[int, float] = {ch: 1.0 for ch in STD_BASELINE_A.keys()}
-GAIN_READY = False
-
-# ✅ 解析斜率特徵的放大倍率 (須與訓練端一致，預設 20.0)
-SLOPE_FACTOR = 20.0
-
-
-# ==========================================
-# Helper Classes
-# ==========================================
-class MajorityChain:
-    """
-    舊版多數決濾波器
-    """
-    def __init__(self, length=CHAIN_LEN, min_maj=CHAIN_MIN_MAJ):
-        self.buffer = deque(maxlen=length)
-        self.min_maj = min_maj
-        self.current_id = None
-
-    def update(self, pred_id: int) -> Tuple[Optional[int], bool]:
-        self.buffer.append(pred_id)
-        if len(self.buffer) < self.buffer.maxlen:
-            return self.current_id, False
-
-        counts = Counter(self.buffer)
-        best_id, count = counts.most_common(1)[0]
-
-        changed = False
-        if count >= self.min_maj:
-            if best_id != self.current_id:
-                self.current_id = best_id
-                changed = True
-        return self.current_id, changed
-
-
-def detection_parse_serial_line(line: str):
-    """
-    解析 MCU 傳來的 $SIL... 字串
-    格式（你目前的專案）：
-      $SILMOVBASE,YYYYMMDD,CNT,CHNs,base1,base2,...*CS
-      $SILHOLD,...  or $SILHOLDAVG,...
-      $SILINO,...   or $SILROW,...
-    """
-    line = line.strip()
-    if not line.startswith("$"):
-        return None
-    if "*" in line:
-        main = line.split("*")[0]
-    else:
-        main = line
-
-    parts = main.split(",")
-    if len(parts) < 5:
-        return None
-
-    try:
-        msg = parts[0][1:]
-        cnt = int(parts[2])
-        chn = int(parts[3])
-        
-        if chn < 0 or chn > 32:
-            return None
-            
-        # ✅ 更強健的數值解析：過濾掉空字串或 checksum 殘留
-        vals = []
-        for v in parts[4:]:
-            v = v.strip().split('*')[0] # 徹底過濾 checksum 可能殘留在最後一個數字的情況
-            if not v: continue
-            try:
-                vals.append(int(v))
-            except ValueError:
-                break 
-        
-        # ✅ 嚴格檢查：如果收到的數據長度不等於標榜的通道數，視為無效封包 (串口雜訊)
-        # 這能防止因為數據截斷導致的通道偏移或增益誤算
-        if len(vals) < chn:
-            return None
-            
-        return msg, cnt, chn, vals[:chn]
-    except Exception:
-        return None
-
-
-# ==========================================
-# Gain / Calibration Logic
-# ==========================================
-def _detection_clamp_value(x: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, x))
-
-
-def detection_update_gain_map(current_base_map: Dict[int, int],
-                                  current_hold_map: Dict[int, int],
-                                  channels: List[int],
-                                  force=False) -> bool:
-    """
-    使用 HOLD/HOLDAVG 封包更新每個 channel 的粗調 Gain Map。
-
-    Gain 是一次 Detect run 的 mutable state；呼叫端必須在新 run 開始前
-    清空 GAIN_MAP，避免沿用前一次裝置校正結果。
-    """
-    global GAIN_READY
-    if not ENABLE_GAIN_MAP:
-        return False
-
-    updated = False
-
-    for ch in channels:
-        if ch not in current_base_map:
-            continue
-
-        base_b = float(current_base_map[ch])
-
-        # 來源：優先用 MCU 送的 hold；沒有就用手動 hold
-        if ch in current_hold_map:
-            hold_b = float(current_hold_map[ch])
-        else:
-            if not USE_MANUAL_HOLDAVG:
-                continue
-            hold_b = float(MANUAL_HOLDAVG.get(ch, 0))
-
-        span_b = abs(hold_b - base_b)
-        if span_b < MIN_SPAN_B:
-            continue
-
-        span_a = float(STD_HOLDAVG_A.get(ch, 0) - STD_BASELINE_A.get(ch, 0))
-        if span_a <= 1.0:
-            continue
-
-        raw_g = span_a / span_b
-        new_g = _detection_clamp_value(raw_g, GAIN_CLAMP_MIN, GAIN_CLAMP_MAX)
-
-        # ✅ 優化：增加死區 (Deadzone)，避免感測器小抖動一值跳更新 Log
-        # 只有當增益變化超過 2% (0.02) 時才更新，除非 force=True
-        old_g = GAIN_MAP.get(ch, 1.0)
-        if force or abs(new_g - old_g) > 0.02:
-            GAIN_MAP[ch] = new_g
-            updated = True
-
-    if updated:
-        GAIN_READY = True
-        print(f"[GAIN] Updated Coarse: {GAIN_MAP}")
-
-    return updated
 
 
 # ==========================================
@@ -226,28 +33,25 @@ def detection_update_gain_map(current_base_map: Dict[int, int],
 class RealtimeGestureDetector:
     def __init__(
         self,
-        model_path: str = MODEL_PATH,
-        metadata_path: str = META_PATH,
-        slope_factor: float = SLOPE_FACTOR,
+        model_path: str,
+        metadata_path: str,
+        slope_factor: float,
         manual_holdavg: Optional[Dict[int, int]] = None,
     ):
         """建立單次推論使用的 Detector，不依賴 API 寫入 module globals。
 
-        預設值保留舊 script 直接執行的相容性；API 呼叫端應明確傳入
-        model、metadata 與固定推論設定，讓不同 Detect run 彼此隔離。
+        呼叫端必須明確傳入 model、metadata 與固定推論設定，讓不同
+        Detect run 彼此隔離；本 Model module 不保存使用者 Config。
         """
         self.clf = None
         self.meta: Dict[str, Any] = {}
         self.model_path = model_path
         self.metadata_path = metadata_path
         self.default_slope_factor = float(slope_factor)
-        holdavg_source = MANUAL_HOLDAVG if manual_holdavg is None else manual_holdavg
+        holdavg_source = {} if manual_holdavg is None else manual_holdavg
         self.manual_holdavg = {
             int(key): int(value) for key, value in holdavg_source.items()
         }
-        # 改回多數決
-        self.chain = MajorityChain()
-
         # window buffers：存「等效 A」的 row / base（row 會做 gain mapping）
         self.window_row: Dict[int, deque] = {}
         self.window_base: Dict[int, deque] = {}
@@ -260,10 +64,6 @@ class RealtimeGestureDetector:
         self.id_to_name: Dict[int, str] = {}
 
         self.feature_cols: List[str] = []
-        
-        # ✅ v5：效能優化與正規化
-        self.predict_stride = 10  # ✅ 診斷模式：稍微調慢速度，確保每一幀推論都不丟包 (原為 1)
-        self.predict_counter = 0
 
         self.load_model_resources()
         self._init_buffers()
@@ -317,10 +117,6 @@ class RealtimeGestureDetector:
         self.flags = self.meta.get("flags", {})
         self.id_to_name = self.meta.get("id_to_name", {})
         
-        # ✅ 根據模型類別數量重新初始化濾波器
-        if len(self.id_to_name) > 0:
-            self.chain = MajorityChain()
-
         self.feature_cols = self.meta.get("feature_cols", [])
         if not self.feature_cols:
             raise ValueError("meta.feature_cols missing/empty (v5 detect requires this)")
@@ -355,7 +151,6 @@ class RealtimeGestureDetector:
             self.window_row[ch].clear()
             self.window_base[ch].clear()
             self.window_hold[ch].clear()
-        self.chain = MajorityChain()
         print("[System] Buffers cleared.")
 
     def push_data(self,
@@ -428,15 +223,9 @@ class RealtimeGestureDetector:
         out[key] = float(np.mean(sig_bin))
 
     def predict(self, gain_map: Dict[int, float]) -> Optional[ModelPrediction]:
-        """Return one raw prediction, or ``None`` until the next inference is ready."""
+        """Buffer 滿時回傳一次原始推論；呼叫頻率由 Detection API 負責。"""
         if not self.is_buffer_full():
             return None
-
-        # ✅ Stride 優化：減少預測頻率
-        self.predict_counter += 1
-        if self.predict_counter < self.predict_stride:
-            return None
-        self.predict_counter = 0
 
         # if self.model_type == "cnn":
         #     # 1) CNN uses raw time-series window (1, WinLen, Chans)
@@ -626,114 +415,4 @@ class RealtimeGestureDetector:
             probabilities=tuple(float(value) for value in probs),
         )
 
-
-# ==========================================
-# Main Loop
-# ==========================================
-def main():
-    print(f"--- Gesture Detect V5 (Aligned with Train V5) ---")
-    print(f"Port: {PORT}, Baud: {BAUD}")
-    print(f"Model: {MODEL_PATH}")
-    print(f"Meta : {META_PATH}")
-
-    # Setup Serial
-    try:
-        ser = serial.Serial(PORT, BAUD, timeout=0.1)
-        print("Serial opened.")
-    except Exception as e:
-        print(f"Serial error: {e}")
-        return
-
-    detector = RealtimeGestureDetector()
-
-    # 狀態：最新 base/hold
-    current_base_map: Dict[int, int] = {}
-    current_hold_map: Dict[int, int] = {}
-
-    try:
-        while True:
-            line = ser.readline()
-            if not line:
-                continue
-
-            try:
-                line_str = line.decode("utf-8", errors="ignore")
-            except Exception:
-                continue
-
-            parsed = detection_parse_serial_line(line_str)
-            if not parsed:
-                continue
-
-            msg, cnt, chn, vals = parsed
-
-            # --- SILMOVBASE / SILBASEEXT ---
-            if msg.startswith("SILMOVBASE") or msg.startswith("SILBASEEXT"):
-                for i in range(chn):
-                    current_base_map[i + 1] = vals[i]
-
-                # 嘗試更新 Gain（若 hold 也有了）
-                if detection_update_gain_map(current_base_map, current_hold_map, detector.channels):
-                    detector.clear_buffers()
-
-            # --- SILHOLD / SILHOLDAVG ---
-            elif msg.startswith("SILHOLD") or msg.startswith("SILHOLDAVG"):
-                for i in range(chn):
-                    current_hold_map[i + 1] = vals[i]
-
-                if detection_update_gain_map(current_base_map, current_hold_map, detector.channels):
-                    detector.clear_buffers()
-
-            # --- SILINO / SILROW ---
-            elif msg.startswith("SILINO") or msg.startswith("SILROW"):
-                if not current_base_map:
-                    continue
-
-                row_vals = {i + 1: vals[i] for i in range(chn)}
-
-                # hold fallback（若沒收到 SILHOLD）
-                hold_vals = dict(current_hold_map)
-                if USE_MANUAL_HOLDAVG:
-                    for ch in detector.channels:
-                        if ch not in hold_vals and ch in MANUAL_HOLDAVG:
-                            hold_vals[ch] = MANUAL_HOLDAVG[ch]
-
-                detector.push_data(row_vals, current_base_map, hold_vals, GAIN_MAP)
-
-                try:
-                    prediction = detector.predict(GAIN_MAP)
-                except Exception as e:
-                    print(f"[PRED_ERR] {e}")
-                    continue
-
-                if prediction is not None:
-                    # 使用多數決濾波器更新穩定狀態
-                    stable_id, changed = detector.chain.update(prediction.pred_id)
-                    pred_name = detector.id_to_name.get(prediction.pred_id, str(prediction.pred_id))
-                    stable_name = detector.id_to_name.get(stable_id, str(stable_id)) if stable_id is not None else None
-
-                    if PRINT_PROBA:
-                        g1 = GAIN_MAP.get(1, 1.0)
-                        print(
-                            f"[PRED] {pred_name} ({prediction.confidence:.2f}) "
-                            f"-> Stable: {stable_name} | G1={g1:.2f}"
-                        )
-                    else:
-                        if changed:
-                            print(f"[STABLE] {stable_name}")
-
-            # 其他封包先忽略
-            else:
-                continue
-
-    except KeyboardInterrupt:
-        print("\nStopped.")
-    finally:
-        try:
-            ser.close()
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    main()
+# Stable 與 Dynamic 後處理由 Detection API 負責，Model 僅輸出原始預測。
