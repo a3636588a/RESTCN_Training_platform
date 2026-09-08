@@ -239,3 +239,10 @@
 - `RealtimeGestureDetector` 必須由 Detection API 明確傳入 Model、Metadata、Slope 與 Manual Hold，不再暗中使用 module defaults。
 - UART lifecycle、固定設定與單次執行狀態分別由 `detection_api.py`、`DetectionConfig` 與 `DetectionRuntimeState` 負責。
 - UI 初始值留在 UI 層，只用來建立 `DetectionConfig`，不再由 Model module 提供。
+
+## 第十階段：TinyOL 核心與 UI 分離
+
+- 新增 `tinyol_api.py`，集中 PC TinyOL 的 UART 錄製、Window CSV 建立、Dataset 前處理、Head Training 與 Base/Candidate Validation。
+- `TinyOlRecordConfig`、`TinyOlTrainConfig` 改由 TinyOL API 擁有，避免設定型別依賴 Qt UI。
+- 提供 `tinyol_record_from_config()`、`tinyol_train_from_config()` 與純設定驗證入口，可由 CLI、測試或其他應用直接使用。
+- `gesture_tool_ui.py` 的 TinyOL Worker 縮減為 Qt Signal adapter；UI 操作方式與既有輸出檔名維持不變。

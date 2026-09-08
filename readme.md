@@ -46,6 +46,7 @@ gesture_tool_ui.py
 | `detection_validation.py` | 純 Detection Config 驗證，不開啟 UART 或載入 Model。 |
 | `detection_contracts.py` | `ModelPrediction` 與 `DetectionResult`。 |
 | `detection_model.py` | Model／Metadata 載入、Sensor Buffer、Feature 與 `predict()`。 |
+| `tinyol_api.py` | PC TinyOL Config、UART 錄製、Head Training 與 Validation。 |
 | `tool_operations.py` | Codegen、Build、Flash Config、operation 與 child process lifecycle。 |
 | `gesture_tool_ui.spec` | PyInstaller 打包設定。 |
 
@@ -304,7 +305,18 @@ payload
 
 UART 的 serial handle 無論正常取消或發生例外，都會在 operation 結束前關閉。
 
-## 6. Gencode／Build／Flash
+## 6. TinyOL API
+
+TinyOL 分頁仍由 UI 建立 Session 與顯示結果，但錄製和訓練核心可在不啟動 Qt 的情況下直接呼叫：
+
+```text
+TinyOlRecordConfig -> tinyol_record_from_config()
+TinyOlTrainConfig  -> tinyol_train_from_config()
+```
+
+`tinyol_record_from_config()` 負責 UART lifecycle、Raw CSV 與 Window CSV；`tinyol_train_from_config()` 負責 Target/Replay Dataset、最後兩個 Dense Layer 的更新，以及 Base/Candidate Validation。`log_fn`、`progress_fn` 與 `stop_event` 都是可選的呼叫端能力，不依賴 UI Signal。
+
+## 7. Gencode／Build／Flash
 
 `tool_operations.py` 集中提供不依賴 Qt 的 Config 與 operation boundary：
 
@@ -319,7 +331,7 @@ flash_run_from_config()
 
 外部 process 的輸出透過 `log_fn` 傳回；取消時會先執行 terminate，逾時後才使用 kill，並確保 stdout 與 process handle 被回收。
 
-## 7. Model 與 Metadata 條件
+## 8. Model 與 Metadata 條件
 
 Detection Model 必須符合以下條件：
 
@@ -332,12 +344,12 @@ Detection Model 必須符合以下條件：
 
 如果 Metadata 宣告 CNN，但 Config 選到同名 `.pkl`，Detection API 會嘗試尋找對應的 `.keras` Model；找不到時會透過 `log_fn` 輸出警告。
 
-## 8. 驗證方式
+## 9. 驗證方式
 
 ### Python 語法
 
 ```powershell
-python -m py_compile training_api.py training_contracts.py training_validation.py training_cnn.py training_ds_tcn.py detection_api.py detection_contracts.py detection_validation.py detection_model.py tool_operations.py gesture_tool_ui.py
+python -m py_compile training_api.py training_contracts.py training_validation.py training_cnn.py training_ds_tcn.py detection_api.py detection_contracts.py detection_validation.py detection_model.py tinyol_api.py tool_operations.py gesture_tool_ui.py
 ```
 
 ### Training API 測試
@@ -359,7 +371,7 @@ python tests/test_training_api.py
 
 目前已完成假的 UART／Detector 與臨時 CSV 流程驗證；真實 Sensor 與實際 TensorFlow Model 仍應在目標環境進行最後驗收。
 
-## 9. PyInstaller 打包
+## 10. PyInstaller 打包
 
 ```powershell
 python -m PyInstaller --noconfirm gesture_tool_ui.spec

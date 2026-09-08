@@ -13,13 +13,11 @@ import numpy as np
 import pandas as pd
 import joblib
 import serial
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 import csv
 from collections import deque
 from typing import Optional, Dict, List, Any, Callable
-from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, recall_score, f1_score
-from sklearn.model_selection import train_test_split
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QEvent
 from PySide6.QtWidgets import (
@@ -60,12 +58,12 @@ def build_nmea_checksum(sentence: str) -> str:
 
 # Trainer
 # =========================
-import training_cnn as cnn_trainer
 import training_api
 import training_validation
 import tool_operations
 import detection_api
 import detection_validation
+import tinyol_api
 
 # =========================
 # Detector
@@ -149,26 +147,13 @@ BuildConfig = tool_operations.BuildConfig
 FlashConfig = tool_operations.FlashConfig
 
 
-@dataclass
-class TinyOlRecordConfig:
-    serial_port: str
-    baud: int
-    output_dir: str
-    session_id: str
-    segment_index: int
-    target_id: int
-    target_name: str
-    record_samples: int
-    start_offset: int
-    window_len: int
-    channels: List[int]
-    use_manual_holdavg: bool
-    manual_holdavg: Dict[int, int]
-    std_baseline_a: Dict[int, int]
-    std_holdavg_a: Dict[int, int]
+TinyOlRecordConfig = tinyol_api.TinyOlRecordConfig
+TinyOlTrainConfig = tinyol_api.TinyOlTrainConfig
 
 
 class TinyOlRecordWorker(QObject):
+    """Qt adapter for the UI-independent TinyOL UART recording operation."""
+
     log_line = Signal(str)
     progress = Signal(int)
     finished_ok = Signal(dict)
@@ -179,143 +164,25 @@ class TinyOlRecordWorker(QObject):
         self.cfg = cfg
         self.stop_event = stop_event
 
-    def _log(self, s: str):
-        self.log_line.emit(_tag_line("TINYOL", s))
+    def _log(self, message: str) -> None:
+        self.log_line.emit(_tag_line("TINYOL", message))
 
-    def run(self):
+    def run(self) -> None:
         try:
-            output_dir = Path(self.cfg.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            ser = serial.Serial(self.cfg.serial_port, self.cfg.baud, timeout=0.1)
-            ser.reset_input_buffer()
-            self._log(f"UART record opened: {self.cfg.serial_port} @ {self.cfg.baud}")
-
-            rows: List[dict] = []
-            current_base_map = dict(self.cfg.std_baseline_a or {})
-            current_hold_map = dict(self.cfg.std_holdavg_a or {})
-            effective_channels = [int(ch) for ch in (self.cfg.channels or [])]
-            if self.cfg.use_manual_holdavg:
-                for ch, val in (self.cfg.manual_holdavg or {}).items():
-                    current_hold_map.setdefault(int(ch), int(val))
-
-            while not self.stop_event.is_set():
-                line = ser.readline().decode(errors="ignore").strip()
-                if not line:
-                    continue
-
-                parsed = detection_api.detection_parse_serial_line(line)
-                if parsed is None:
-                    continue
-                msg, cnt, chn, vals = parsed
-                if effective_channels:
-                    channel_count = min(int(chn), len(vals), len(effective_channels))
-                else:
-                    channel_count = min(int(chn), len(vals))
-
-                if msg.startswith("SILMOVBASE"):
-                    for i in range(channel_count):
-                        ch = effective_channels[i] if effective_channels else (i + 1)
-                        current_base_map[ch] = int(vals[i])
-                    continue
-
-                if msg.startswith("SILHOLD") or msg.startswith("SILHOLDAVG"):
-                    for i in range(channel_count):
-                        ch = effective_channels[i] if effective_channels else (i + 1)
-                        current_hold_map[ch] = int(vals[i])
-                    continue
-
-                if not (msg.startswith("SILROWDATA") or msg.startswith("SILROW") or msg.startswith("SILINO")):
-                    continue
-                if not current_base_map:
-                    continue
-
-                row = {
-                    "SEQ": len(rows),
-                    "GESTURE": self.cfg.target_name,
-                    "TARGET_ID": self.cfg.target_id,
-                }
-                for i in range(channel_count):
-                    ch = effective_channels[i] if effective_channels else (i + 1)
-                    row[f"ROWCH{ch}"] = int(vals[i])
-                    row[f"MOVBASE{ch}"] = int(current_base_map.get(ch, 0))
-                    row[f"HOLDAVG{ch}"] = int(current_hold_map.get(ch, 0))
-                rows.append(row)
-                self.progress.emit(len(rows))
-
-                if len(rows) >= self.cfg.record_samples:
-                    self._log(f"Reached target samples: {len(rows)}")
-                    break
-
-            try:
-                ser.close()
-            except Exception:
-                pass
-
-            if not rows:
-                raise RuntimeError("No UART rows captured.")
-
-            raw_path = output_dir / f"{self.cfg.session_id}_target_raw_{self.cfg.segment_index:03d}.csv"
-            export_channels = [int(ch) for ch in (effective_channels or sorted(current_base_map.keys()) or sorted(current_hold_map.keys()))]
-            if not export_channels:
-                export_channels = list(range(1, channel_count + 1))
-            fieldnames = (
-                ["SEQ"]
-                + [f"ROWCH{i}" for i in export_channels]
-                + [f"MOVBASE{i}" for i in export_channels]
-                + [f"HOLDAVG{i}" for i in export_channels]
-                + ["GESTURE", "TARGET_ID"]
+            result = tinyol_api.tinyol_record_from_config(
+                self.cfg,
+                log_fn=self._log,
+                progress_fn=self.progress.emit,
+                stop_event=self.stop_event,
             )
-            with raw_path.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow(row)
-
-            window_path = None
-            start = int(self.cfg.start_offset)
-            end = start + int(self.cfg.window_len)
-            if len(rows) >= end:
-                extracted = rows[start:end]
-                window_path = output_dir / f"{self.cfg.session_id}_target_window_{self.cfg.segment_index:03d}.csv"
-                with window_path.open("w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    for row in extracted:
-                        writer.writerow(row)
-                self._log(f"Extracted target window rows[{start}:{end}]")
-            else:
-                self._log(f"Captured {len(rows)} rows, not enough for window extraction ({end} required).")
-
-            self.finished_ok.emit({
-                "raw_csv": str(raw_path),
-                "window_csv": str(window_path) if window_path else "",
-                "rows": len(rows),
-                "window_start": start,
-                "window_len": int(self.cfg.window_len),
-            })
-        except Exception as e:
-            self.finished_err.emit(str(e))
-
-
-@dataclass
-class TinyOlTrainConfig:
-    model_path: str
-    metadata_path: str
-    output_dir: str
-    session_id: str
-    target_id: int
-    target_name: str
-    slope_factor: float
-    batch_size: int
-    epochs: int
-    learning_rate: float
-    channels: List[int] = field(default_factory=list)
-    target_window_csvs: List[str] = field(default_factory=list)
-    replay_window_csvs: List[str] = field(default_factory=list)
+            self.finished_ok.emit(result)
+        except Exception as exc:
+            self.finished_err.emit(str(exc))
 
 
 class TinyOlTrainWorker(QObject):
+    """Qt adapter for the UI-independent TinyOL head-training operation."""
+
     log_line = Signal(str)
     finished_ok = Signal(dict)
     finished_err = Signal(str)
@@ -325,261 +192,19 @@ class TinyOlTrainWorker(QObject):
         self.cfg = cfg
         self.stop_event = stop_event
 
-    def _log(self, s: str):
-        self.log_line.emit(_tag_line("TINYOL", s))
+    def _log(self, message: str) -> None:
+        self.log_line.emit(_tag_line("TINYOL", message))
 
-    @staticmethod
-    def _load_window_csv(csv_path: str, slope_factor: float, label_id: int, channels_hint: Optional[List[int]] = None):
-        df = pd.read_csv(csv_path)
-        if channels_hint:
-            channels = [
-                int(ch) for ch in channels_hint
-                if f"ROWCH{int(ch)}" in df.columns
-                and f"MOVBASE{int(ch)}" in df.columns
-                and f"HOLDAVG{int(ch)}" in df.columns
-            ]
-        else:
-            channels = [int(re.sub(r"\D", "", c)) for c in df.columns if c.startswith("ROWCH")]
-            channels = sorted(set(channels))
-        if not channels:
-            raise RuntimeError(f"No ROWCH columns found in {csv_path}")
-
-        data_list = []
-        for ch in channels:
-            row = df[f"ROWCH{ch}"].values.astype(np.float32)
-            base = df[f"MOVBASE{ch}"].values.astype(np.float32)
-            hold = df[f"HOLDAVG{ch}"].values.astype(np.float32)
-            d_mapped = row - base
-            span = np.abs(hold - base)
-            span = np.maximum(span, 1.0)
-            dn = d_mapped / span
-            data_list.append(dn)
-
-        signal = np.stack(data_list, axis=1)
-        delta = np.zeros_like(signal)
-        delta[1:] = np.diff(signal, axis=0) * float(slope_factor)
-        combined = np.concatenate([signal, delta], axis=1)
-        X_win = combined[np.newaxis, :, :].astype(np.float32)
-        X_var = np.var(signal, axis=0, keepdims=True).astype(np.float32)
-        X_mean = np.mean(signal, axis=0, keepdims=True).astype(np.float32)
-        y = np.array([label_id], dtype=np.int32)
-        return X_win, X_var, X_mean, y
-
-    def _build_dataset(self):
-        meta = joblib.load(self.cfg.metadata_path)
-        id_to_name = meta.get("id_to_name", {})
-        name_to_id = {str(v): int(k) for k, v in id_to_name.items()}
-
-        Xw_all, Xv_all, Xm_all, y_all = [], [], [], []
-        source_rows = []
-        role_flags: List[str] = []
-
-        for path in self.cfg.target_window_csvs:
-            Xw, Xv, Xm, y = self._load_window_csv(path, self.cfg.slope_factor, self.cfg.target_id, self.cfg.channels)
-            Xw_all.append(Xw); Xv_all.append(Xv); Xm_all.append(Xm); y_all.append(y)
-            source_rows.append({"path": path, "label_id": self.cfg.target_id, "role": "target"})
-            role_flags.append("target")
-
-        for path in self.cfg.replay_window_csvs:
-            df = pd.read_csv(path, nrows=1)
-            label_id = None
-            if "TARGET_ID" in df.columns:
-                try:
-                    label_id = int(df.iloc[0]["TARGET_ID"])
-                except Exception:
-                    label_id = None
-            if label_id is None and "GESTURE" in df.columns:
-                label_id = name_to_id.get(str(df.iloc[0]["GESTURE"]), self.cfg.target_id)
-            if label_id is None:
-                raise RuntimeError(f"Cannot determine label id for replay window: {path}")
-            Xw, Xv, Xm, y = self._load_window_csv(path, self.cfg.slope_factor, int(label_id), self.cfg.channels)
-            Xw_all.append(Xw); Xv_all.append(Xv); Xm_all.append(Xm); y_all.append(y)
-            source_rows.append({"path": path, "label_id": int(label_id), "role": "replay"})
-            role_flags.append("replay")
-
-        if not Xw_all:
-            raise RuntimeError("No TinyOL dataset windows available.")
-
-        Xw = np.concatenate(Xw_all, axis=0)
-        Xv = np.concatenate(Xv_all, axis=0)
-        Xm = np.concatenate(Xm_all, axis=0)
-        y = np.concatenate(y_all, axis=0)
-        return meta, Xw, Xv, Xm, y, source_rows, np.array(role_flags, dtype=object)
-
-    def _make_train_eval_split(self, y: np.ndarray):
-        indices = np.arange(len(y))
-        counts = Counter(y.tolist())
-        if len(y) >= 8 and all(v >= 2 for v in counts.values()):
-            try:
-                train_idx, eval_idx = train_test_split(
-                    indices, test_size=0.25, random_state=42, stratify=y
-                )
-                return np.array(train_idx), np.array(eval_idx), "stratified"
-            except Exception:
-                pass
-        return indices, indices, "reuse-train-as-eval"
-
-    def _select_trainable_dense_layers(self, model):
-        dense_layers = [layer for layer in model.layers if layer.__class__.__name__ == "Dense"]
-        if len(dense_layers) < 2:
-            raise RuntimeError("Model does not have enough Dense layers for TinyOL head update.")
-        trainable_names = {dense_layers[-1].name, dense_layers[-2].name}
-        for layer in model.layers:
-            layer.trainable = layer.name in trainable_names
-        return sorted(trainable_names)
-
-    def run(self):
+    def run(self) -> None:
         try:
-            meta, Xw, Xv, Xm, y, source_rows, role_flags = self._build_dataset()
-            num_classes = int(meta.get("num_classes", len(meta.get("id_to_name", {}))))
-            train_idx, eval_idx, split_mode = self._make_train_eval_split(y)
-
-            self._log(f"Dataset windows: total={len(y)} train={len(train_idx)} eval={len(eval_idx)} mode={split_mode}")
-
-            model = cnn_trainer.tf.keras.models.load_model(self.cfg.model_path, compile=False)
-            trainable_names = self._select_trainable_dense_layers(model)
-            self._log(f"Trainable Dense layers: {', '.join(trainable_names)}")
-
-            model.compile(
-                optimizer=cnn_trainer.tf.keras.optimizers.SGD(learning_rate=float(self.cfg.learning_rate)),
-                loss=cnn_trainer.tf.keras.losses.CategoricalCrossentropy(),
-                metrics=["accuracy"],
+            result = tinyol_api.tinyol_train_from_config(
+                self.cfg,
+                log_fn=self._log,
+                stop_event=self.stop_event,
             )
-
-            y_train = cnn_trainer.tf.keras.utils.to_categorical(y[train_idx], num_classes)
-            y_eval = cnn_trainer.tf.keras.utils.to_categorical(y[eval_idx], num_classes)
-
-            train_target_mask = (role_flags[train_idx] == "target")
-            target_train_count = int(np.sum(train_target_mask))
-            replay_train_count = int(len(train_idx) - target_train_count)
-            oversample_factor = 1
-            expanded_train_idx = np.array(train_idx, dtype=np.int32)
-            sample_weight = np.ones(len(expanded_train_idx), dtype=np.float32)
-            if target_train_count > 0 and replay_train_count > target_train_count:
-                oversample_factor = int(np.ceil(replay_train_count / max(target_train_count, 1)))
-                oversample_factor = max(1, min(oversample_factor, 8))
-                target_idx = train_idx[train_target_mask]
-                replay_idx = train_idx[~train_target_mask]
-                expanded_train_idx = np.concatenate([replay_idx] + [target_idx] * oversample_factor).astype(np.int32)
-                sample_weight = np.ones(len(expanded_train_idx), dtype=np.float32)
-                sample_weight[len(replay_idx):] = 2.0
-            self._log(
-                f"Train mix: target={target_train_count} replay={replay_train_count} "
-                f"oversample={oversample_factor} expanded_train={len(expanded_train_idx)}"
-            )
-            self._log(
-                f"Train config: epochs={int(self.cfg.epochs)} batch={int(self.cfg.batch_size)} "
-                f"lr={float(self.cfg.learning_rate):.6f}"
-            )
-
-            history = model.fit(
-                [Xw[expanded_train_idx], Xv[expanded_train_idx], Xm[expanded_train_idx]],
-                cnn_trainer.tf.keras.utils.to_categorical(y[expanded_train_idx], num_classes),
-                validation_data=([Xw[eval_idx], Xv[eval_idx], Xm[eval_idx]], y_eval),
-                sample_weight=sample_weight,
-                batch_size=int(self.cfg.batch_size),
-                epochs=int(self.cfg.epochs),
-                verbose=0,
-            )
-            hist = history.history if hasattr(history, "history") else {}
-            losses = hist.get("loss", [])
-            accs = hist.get("accuracy", [])
-            val_losses = hist.get("val_loss", [])
-            val_accs = hist.get("val_accuracy", [])
-            for epoch_idx in range(max(len(losses), len(accs), len(val_losses), len(val_accs))):
-                loss_s = f"{float(losses[epoch_idx]):.4f}" if epoch_idx < len(losses) else "--"
-                acc_s = f"{float(accs[epoch_idx]):.4f}" if epoch_idx < len(accs) else "--"
-                vloss_s = f"{float(val_losses[epoch_idx]):.4f}" if epoch_idx < len(val_losses) else "--"
-                vacc_s = f"{float(val_accs[epoch_idx]):.4f}" if epoch_idx < len(val_accs) else "--"
-                self._log(
-                    f"Epoch {epoch_idx + 1}/{int(self.cfg.epochs)} | "
-                    f"loss={loss_s} acc={acc_s} val_loss={vloss_s} val_acc={vacc_s}"
-                )
-
-            base_model = cnn_trainer.tf.keras.models.load_model(self.cfg.model_path, compile=False)
-            base_probs = base_model.predict([Xw[eval_idx], Xv[eval_idx], Xm[eval_idx]], verbose=0)
-            cand_probs = model.predict([Xw[eval_idx], Xv[eval_idx], Xm[eval_idx]], verbose=0)
-            base_pred = np.argmax(base_probs, axis=1)
-            cand_pred = np.argmax(cand_probs, axis=1)
-            y_true = y[eval_idx]
-
-            output_dir = Path(self.cfg.output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            candidate_model_path = output_dir / f"{self.cfg.session_id}_tinyol.keras"
-            model.save(candidate_model_path)
-
-            labels = list(range(num_classes))
-            target_id = int(self.cfg.target_id)
-            target_recall_base = recall_score(y_true, base_pred, labels=labels, average=None, zero_division=0)[target_id]
-            target_recall_new = recall_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)[target_id]
-            target_f1_base = f1_score(y_true, base_pred, labels=labels, average=None, zero_division=0)[target_id]
-            target_f1_new = f1_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)[target_id]
-            overall_acc_base = accuracy_score(y_true, base_pred)
-            overall_acc_new = accuracy_score(y_true, cand_pred)
-            recall_base_all = recall_score(y_true, base_pred, labels=labels, average=None, zero_division=0)
-            recall_new_all = recall_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)
-            f1_base_all = f1_score(y_true, base_pred, labels=labels, average=None, zero_division=0)
-            f1_new_all = f1_score(y_true, cand_pred, labels=labels, average=None, zero_division=0)
-
-            non_target_ids = [idx for idx in labels if idx != target_id]
-            non_target_recall_delta = [float(recall_new_all[idx] - recall_base_all[idx]) for idx in non_target_ids]
-            non_target_f1_delta = [float(f1_new_all[idx] - f1_base_all[idx]) for idx in non_target_ids]
-            worst_non_target_recall_delta = min(non_target_recall_delta) if non_target_recall_delta else 0.0
-            mean_non_target_f1_delta = float(np.mean(non_target_f1_delta)) if non_target_f1_delta else 0.0
-
-            target_recall_delta = float(target_recall_new - target_recall_base)
-            target_f1_delta = float(target_f1_new - target_f1_base)
-            overall_acc_delta = float(overall_acc_new - overall_acc_base)
-
-            passed = (
-                ((target_recall_delta >= 0.05) or (target_f1_delta >= 0.03))
-                and (overall_acc_delta >= -0.01)
-                and (worst_non_target_recall_delta >= -0.03)
-                and (mean_non_target_f1_delta >= -0.02)
-            )
-
-            report = {
-                "target_recall_base": float(target_recall_base),
-                "target_recall_new": float(target_recall_new),
-                "target_recall_delta": target_recall_delta,
-                "target_f1_base": float(target_f1_base),
-                "target_f1_new": float(target_f1_new),
-                "target_f1_delta": target_f1_delta,
-                "overall_acc_base": float(overall_acc_base),
-                "overall_acc_new": float(overall_acc_new),
-                "overall_acc_delta": overall_acc_delta,
-                "worst_non_target_recall_delta": float(worst_non_target_recall_delta),
-                "mean_non_target_f1_delta": float(mean_non_target_f1_delta),
-                "decision": "PASS" if passed else "REJECT",
-                "split_mode": split_mode,
-                "target_train_count": target_train_count,
-                "replay_train_count": replay_train_count,
-                "target_oversample_factor": oversample_factor,
-                "expanded_train_count": int(len(expanded_train_idx)),
-                "candidate_model_path": str(candidate_model_path),
-                "trainable_dense_layers": trainable_names,
-                "confusion_matrix_base": confusion_matrix(y_true, base_pred, labels=labels).tolist(),
-                "confusion_matrix_new": confusion_matrix(y_true, cand_pred, labels=labels).tolist(),
-                "classification_report_new": classification_report(
-                    y_true, cand_pred, labels=labels, zero_division=0, output_dict=True
-                ),
-                "source_rows": source_rows,
-            }
-            self._log(
-                f"Validation result: decision={report['decision']} "
-                f"target_recall={report['target_recall_base']:.3f}->{report['target_recall_new']:.3f} "
-                f"target_f1={report['target_f1_base']:.3f}->{report['target_f1_new']:.3f} "
-                f"acc={report['overall_acc_base']:.3f}->{report['overall_acc_new']:.3f}"
-            )
-
-            summary_path = output_dir / f"{self.cfg.session_id}_validation_summary.json"
-            summary_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-            report["summary_path"] = str(summary_path)
-            self.finished_ok.emit(report)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            self.finished_err.emit(str(e))
+            self.finished_ok.emit(result)
+        except Exception as exc:
+            self.finished_err.emit(str(exc))
 
 
 @dataclass
