@@ -1412,7 +1412,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_gencode_cnn, "Gen Code (CNN)")
         # self.tabs.addTab(self.tab_build, "Build") # Hidden by default (15-click unlock)
         self.tabs.addTab(self.tab_autobuild, "Auto Build")
-        
+        # 保留 Gen Code／Auto Build 的頁面、Signal 與 operation，只從一般 UI 隱藏。
+        # 使用 setTabVisible 而非 removeTab，避免破壞既有 Widget lifecycle。
+        self.tabs.setTabVisible(self.tabs.indexOf(self.tab_gencode_cnn), False)
+        self.tabs.setTabVisible(self.tabs.indexOf(self.tab_autobuild), False)
+
         # Detect clicks on "Auto Build" tab for Engineer Mode
         self.tabs.tabBar().installEventFilter(self)
 
@@ -1808,7 +1812,9 @@ class MainWindow(QMainWindow):
         v_dynamic.addWidget(self.tbl_dynamic, 1)
 
         self.g_dynamic.setMinimumHeight(500)
+        # Dynamic Gesture 編輯功能仍保留，這個簡化版 UI 暫不顯示入口。
         layout.addWidget(self.g_dynamic)
+        self.g_dynamic.setVisible(False)
 
         # Features (Simplified for CNN)
         self.g_features = QGroupBox("Features")
@@ -1838,11 +1844,14 @@ class MainWindow(QMainWindow):
         self.dsb_slope_factor.setValue(20.0)
         self.dsb_slope_factor.setToolTip("斜率放大倍率：放大信號微小變化（如呼氣）的關鍵係數。")
         self.f_features.addRow("slope_factor (斜率放大):", self.dsb_slope_factor)
+        self.f_features.setRowVisible(self.dsb_slope_factor, False)
 
         self.spin_window_step = NoWheelSpinBox()
         self.spin_window_step.setRange(1, 200)
         self.spin_window_step.setValue(5)
+        # 進階 Features 仍會寫入 TrainingConfig，但不顯示在簡化版 UI。
         self.f_features.addRow("window_step:", self.spin_window_step)
+        self.f_features.setRowVisible(self.spin_window_step, False)
 
         layout.addWidget(self.g_features)
 
@@ -1858,6 +1867,7 @@ class MainWindow(QMainWindow):
         self.spin_aug_copies.setRange(0, 200)
         self.spin_aug_copies.setValue(10)
         self.f_aug.addRow("aug_copies:", self.spin_aug_copies)
+        self.f_aug.setRowVisible(self.spin_aug_copies, False)
 
         self.dsb_delta_min = NoWheelDoubleSpinBox()
         self.dsb_delta_min.setDecimals(2)
@@ -1877,6 +1887,7 @@ class MainWindow(QMainWindow):
         hdg.addWidget(self.dsb_delta_max)
         hdg.addStretch(1)
         self.f_aug.addRow("delta_gain:", w_dg)
+        self.f_aug.setRowVisible(w_dg, False)
 
         self.dsb_span_min = NoWheelDoubleSpinBox()
         self.dsb_span_min.setDecimals(2)
@@ -1896,6 +1907,7 @@ class MainWindow(QMainWindow):
         hsg.addWidget(self.dsb_span_max)
         hsg.addStretch(1)
         self.f_aug.addRow("span_gain:", w_sg)
+        self.f_aug.setRowVisible(w_sg, False)
 
         self.chk_offset_aug = QCheckBox("enable_offset_aug")
         self.chk_offset_aug.setChecked(True)
@@ -1918,6 +1930,7 @@ class MainWindow(QMainWindow):
         hoff.addWidget(self.dsb_clip)
         hoff.addStretch(1)
         self.f_aug.addRow("", w_off)
+        self.f_aug.setRowVisible(w_off, False)
 
         self.chk_time_warp = QCheckBox("enable_time_warp")
         self.chk_time_warp.setChecked(True)
@@ -1939,7 +1952,9 @@ class MainWindow(QMainWindow):
         htw.addWidget(QLabel("max:"))
         htw.addWidget(self.dsb_tw_max)
         htw.addStretch(1)
+        # Augmentation 開關保留給使用者，其餘參數維持既有預設並隱藏。
         self.f_aug.addRow("", w_tw)
+        self.f_aug.setRowVisible(w_tw, False)
 
         layout.addWidget(self.g_aug)
 
@@ -1962,6 +1977,7 @@ class MainWindow(QMainWindow):
         self.spin_random_state.setRange(0, 999999)
         self.spin_random_state.setValue(42)
         self.f_model.addRow("random_state:", self.spin_random_state)
+        self.f_model.setRowVisible(self.spin_random_state, False)
 
         # CNN Specific
         self.spin_cnn_epochs = NoWheelSpinBox()
@@ -1973,6 +1989,7 @@ class MainWindow(QMainWindow):
         self.spin_batch_size.setRange(1, 1024)
         self.spin_batch_size.setValue(32)
         self.f_model.addRow("batch_size:", self.spin_batch_size)
+        self.f_model.setRowVisible(self.spin_batch_size, False)
 
         self.dsb_learning_rate = NoWheelDoubleSpinBox()
         self.dsb_learning_rate.setDecimals(4)
@@ -1984,20 +2001,24 @@ class MainWindow(QMainWindow):
         self.dsb_label_smoothing.setDecimals(3)
         self.dsb_label_smoothing.setRange(0.0, 0.5)
         self.dsb_label_smoothing.setSingleStep(0.01)
-        self.dsb_label_smoothing.setValue(0.08)
+        self.dsb_label_smoothing.setValue(0.0)
         self.dsb_label_smoothing.setToolTip("CategoricalCrossentropy 的 label smoothing。值越高，模型通常越不會輸出接近 1.00 的 confidence。")
         self.f_model.addRow("label_smoothing:", self.dsb_label_smoothing)
+        self.f_model.setRowVisible(self.dsb_label_smoothing, False)
 
         # Patience params
         self.spin_early_stop_patience = NoWheelSpinBox()
         self.spin_early_stop_patience.setRange(1, 100)
         self.spin_early_stop_patience.setValue(15)
         self.f_model.addRow("EarlyStop Patience (次數):", self.spin_early_stop_patience)
+        self.f_model.setRowVisible(self.spin_early_stop_patience, False)
 
         self.spin_lr_patience = NoWheelSpinBox()
         self.spin_lr_patience.setRange(1, 100)
         self.spin_lr_patience.setValue(10)
+        # 隱藏進階 Model 參數，但仍由既有 Widget 值建立 TrainingConfig。
         self.f_model.addRow("ReduceLR Patience (次數):", self.spin_lr_patience)
+        self.f_model.setRowVisible(self.spin_lr_patience, False)
 
         layout.addWidget(self.g_model)
 
@@ -2143,6 +2164,8 @@ class MainWindow(QMainWindow):
         self.lbl_dynamic_result.setFont(font)
         v_dyn.addWidget(self.lbl_dynamic_result)
         layout.addWidget(g_dynamic_result)
+        # Dynamic Gesture output 邏輯仍保留，簡化版 Detect UI 不顯示結果區。
+        g_dynamic_result.setVisible(False)
 
         # Dynamic Gestures Config
         g_dynamic_cfg = QGroupBox("Dynamic Gestures Config")
@@ -2157,6 +2180,8 @@ class MainWindow(QMainWindow):
         f_dyn_cfg.addRow("Dynamic gestures JSON:", w_dyn)
 
         layout.addWidget(g_dynamic_cfg)
+        # 保留預設 JSON path 供 DetectionConfig 使用，但隱藏編輯入口。
+        g_dynamic_cfg.setVisible(False)
 
         # New: Real-time Post-Processing Config for Detect Tab
         g_detect_post = QGroupBox("CNN Post-Processing (Real-time Tuning)")
@@ -2172,6 +2197,7 @@ class MainWindow(QMainWindow):
         lbl_alpha = QLabel("Smoothing Alpha:")
         lbl_alpha.setToolTip(self.dsb_detect_alpha.toolTip())
         f_dp.addRow(lbl_alpha, self.dsb_detect_alpha)
+        f_dp.setRowVisible(self.dsb_detect_alpha, False)
 
         self.dsb_detect_margin = NoWheelDoubleSpinBox()
         self.dsb_detect_margin.setRange(0.0, 1.0); self.dsb_detect_margin.setValue(0.45)
@@ -2183,6 +2209,7 @@ class MainWindow(QMainWindow):
         lbl_margin = QLabel("Switching Margin:")
         lbl_margin.setToolTip(self.dsb_detect_margin.toolTip())
         f_dp.addRow(lbl_margin, self.dsb_detect_margin)
+        f_dp.setRowVisible(self.dsb_detect_margin, False)
 
         self.dsb_detect_exit = NoWheelDoubleSpinBox()
         self.dsb_detect_exit.setRange(0.0, 1.0); self.dsb_detect_exit.setValue(0.25)
@@ -2194,6 +2221,7 @@ class MainWindow(QMainWindow):
         lbl_exit = QLabel("Latch Exit Thresh:")
         lbl_exit.setToolTip(self.dsb_detect_exit.toolTip())
         f_dp.addRow(lbl_exit, self.dsb_detect_exit)
+        f_dp.setRowVisible(self.dsb_detect_exit, False)
 
         self.sb_detect_stride = NoWheelSpinBox()
         self.sb_detect_stride.setRange(1, 100); self.sb_detect_stride.setValue(6)
@@ -2212,6 +2240,7 @@ class MainWindow(QMainWindow):
         lbl_slope = QLabel("Slope Factor (斜率放大):")
         lbl_slope.setToolTip(self.dsb_detect_slope.toolTip())
         f_dp.addRow(lbl_slope, self.dsb_detect_slope)
+        f_dp.setRowVisible(self.dsb_detect_slope, False)
 
         # Macro Tier Definition (Independent for Detect)
         self.tbl_detect_tier_base = QTableWidget(3, 3)
@@ -2241,6 +2270,7 @@ class MainWindow(QMainWindow):
         lbl_tier = QLabel("Global Defaults:")
         lbl_tier.setToolTip(self.tbl_detect_tier_base.toolTip())
         f_dp.addRow(lbl_tier, self.tbl_detect_tier_base)
+        f_dp.setRowVisible(self.tbl_detect_tier_base, False)
 
         self.tbl_detect_gestures = QTableWidget(0, 5)
         self.tbl_detect_gestures.setHorizontalHeaderLabels(["ID", "Name", "Tier", "Stable", "Thresh"])
@@ -2253,6 +2283,8 @@ class MainWindow(QMainWindow):
         lbl_ges = QLabel("Gesture Settings:")
         lbl_ges.setToolTip(self.tbl_detect_gestures.toolTip())
         f_dp.addRow(lbl_ges, self.tbl_detect_gestures)
+        # 所有 Gesture 固定使用 Fast tier，表格仍保留供 Config extraction。
+        f_dp.setRowVisible(self.tbl_detect_gestures, False)
 
         layout.addWidget(g_detect_post)
 
@@ -2843,9 +2875,6 @@ class MainWindow(QMainWindow):
             target_tbl.setRowCount(0)
             target_tbl.setRowCount(num_classes)
             
-            vips = [0, 5, 10, 11, 14, 15]
-            restricteds = [1, 2, 13]
-
             for i in range(num_classes):
                 name = id_to_name.get(i, f"cl{i}")
                 target_tbl.setItem(i, 0, QTableWidgetItem(str(i)))
@@ -2854,10 +2883,9 @@ class MainWindow(QMainWindow):
                 combo = QComboBox()
                 combo.addItems(["Fast", "Normal", "Strict"])
                 
-                default_tier = "Normal"
-                low_name = name.lower()
-                if i in vips or "sos" in low_name: default_tier = "Fast"
-                elif i in restricteds: default_tier = "Strict"
+                # 簡化版 Detect 預設所有 Gesture 使用 Fast；Tier table 雖隱藏，
+                # 仍透過既有 extraction 將 Fast threshold/stable 設定送入 API。
+                default_tier = "Fast"
                 combo.setCurrentText(default_tier)
                 target_tbl.setCellWidget(i, 2, combo)
                 

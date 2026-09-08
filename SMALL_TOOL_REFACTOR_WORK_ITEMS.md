@@ -239,3 +239,13 @@
 - `RealtimeGestureDetector` 必須由 Detection API 明確傳入 Model、Metadata、Slope 與 Manual Hold，不再暗中使用 module defaults。
 - UART lifecycle、固定設定與單次執行狀態分別由 `detection_api.py`、`DetectionConfig` 與 `DetectionRuntimeState` 負責。
 - UI 初始值留在 UI 層，只用來建立 `DetectionConfig`，不再由 Model module 提供。
+
+## UI Disable View
+
+- 簡化 Training 畫面，隱藏 Dynamic Gestures 編輯區、`slope_factor` 與 `window_step`。
+- Augmentation 僅顯示總開關；詳細參數仍保留既有預設值並送入 `TrainingConfig`。
+- 隱藏 `random_state`、`batch_size`、`label_smoothing`、EarlyStop 與 ReduceLR；功能與資料流仍保留。
+- 比較訓練完成後，UI 的 `label_smoothing` 固定為 `0.0` 並維持隱藏；由 UI 啟動的 Training 不套用 Label Smoothing。
+- Detect 畫面隱藏 Dynamic Result、Dynamic Gestures Config 與 CNN Post-Processing 進階參數，只保留可調整的 `Inference Stride`。
+- Detect Gesture Tier 預設全部設為 `Fast`；隱藏的 Tier table 仍保留既有 Config extraction 與 API 資料流。
+- 主畫面隱藏 `Gen Code (CNN)` 與 `Auto Build` 分頁；頁面物件、Signal 與底層 operation 保留，不更動 API。
