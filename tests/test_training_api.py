@@ -33,6 +33,8 @@ class TrainingApiTest(unittest.TestCase):
         self.assertEqual(self.config.window_step, 2)
         self.assertEqual(self.config.batch_size, 32)
         self.assertEqual(self.config.epochs, 200)
+        self.assertEqual(self.config.test_size, 0.20)
+        self.assertEqual(self.config.random_state, 42)
         self.assertEqual(self.config.output_model_path, "gesture_model_cnn_v1.h5")
         self.assertEqual(self.config.output_metadata_path, "gesture_model_meta_cnn_v1.pkl")
 
@@ -47,6 +49,16 @@ class TrainingApiTest(unittest.TestCase):
         self.assertEqual(
             [issue.code for issue in issues],
             [training_validation.TRAINING_ISSUE_LABELS_EMPTY],
+        )
+
+    def test_validation_rejects_out_of_range_test_size(self):
+        self.config.test_size = 1.0
+
+        issues = training_validation.training_validate_config(self.config)
+
+        self.assertIn(
+            training_validation.TRAINING_ISSUE_TEST_SIZE_OUT_OF_RANGE,
+            [issue.code for issue in issues],
         )
 
     def test_default_config_routes_to_cnn_and_normalizes_result(self):

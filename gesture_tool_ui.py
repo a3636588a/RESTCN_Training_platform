@@ -3033,6 +3033,8 @@ class MainWindow(QMainWindow):
             batch_size=int(self.spin_batch_size.value()),
             learning_rate=float(self.dsb_learning_rate.value()),
             label_smoothing=float(self.dsb_label_smoothing.value()),
+            test_size=float(self.dsb_test_size.value()),
+            random_state=int(self.spin_random_state.value()),
             early_stop_patience=int(self.spin_early_stop_patience.value()),
             lr_patience=int(self.spin_lr_patience.value()),
 

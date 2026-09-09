@@ -8,6 +8,7 @@ from typing import Any, Tuple
 TRAINING_ISSUE_DATA_DIR_NOT_FOUND = "data_dir_not_found"
 TRAINING_ISSUE_LABELS_EMPTY = "labels_empty"
 TRAINING_ISSUE_LABEL_IDS_NONCONTIGUOUS = "label_ids_noncontiguous"
+TRAINING_ISSUE_TEST_SIZE_OUT_OF_RANGE = "test_size_out_of_range"
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,14 @@ def training_validate_config(config: Any) -> Tuple[TrainingConfigIssue, ...]:
         issues.append(TrainingConfigIssue(
             code=TRAINING_ISSUE_DATA_DIR_NOT_FOUND,
             message=f"data_dir not found: {data_dir_value or '<empty>'}",
+        ))
+
+    test_size = getattr(config, "test_size", 0.20)
+    if not 0.0 < test_size < 1.0:
+        # A non-empty Training and Validation side both require a strict ratio.
+        issues.append(TrainingConfigIssue(
+            code=TRAINING_ISSUE_TEST_SIZE_OUT_OF_RANGE,
+            message=f"test_size must be greater than 0 and less than 1: {test_size}",
         ))
 
     label_defs = getattr(config, "label_defs", None) or []

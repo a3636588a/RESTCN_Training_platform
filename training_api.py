@@ -25,6 +25,10 @@ class TrainingConfig:
     epochs: int = 200
     learning_rate: float = 0.001
     label_smoothing: float = 0.08
+    # Defaults preserve the historical split while allowing UI/CLI callers to
+    # request a reproducible alternative without changing trainer internals.
+    test_size: float = 0.20
+    random_state: int = 42
     early_stop_patience: int = 15
     lr_patience: int = 10
 
