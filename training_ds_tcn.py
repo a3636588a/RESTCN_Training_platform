@@ -129,7 +129,10 @@ def training_run_ds_tcn(
         raise RuntimeError("No valid files with recognized prefixes found for splitting.")
 
     files_train, files_val_split = train_test_split(
-        valid_files, test_size=0.2, stratify=file_labels, random_state=42
+        valid_files,
+        test_size=cfg.test_size,
+        stratify=file_labels,
+        random_state=cfg.random_state,
     )
     train_set = set([str(pathlib.Path(f.parent.name) / f.name) for f in files_train])
     val_set = set([str(pathlib.Path(f.parent.name) / f.name) for f in files_val_split])
