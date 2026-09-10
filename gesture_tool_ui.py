@@ -1384,6 +1384,8 @@ class MainWindow(QMainWindow):
         
         # Auto build related
         self.last_codegen_output_dir = None
+        # 由 TrainingResult 提供實際 artifact 路徑，避免 UI 綁死報告檔名。
+        self.last_training_report_path: Optional[str] = None
 
         # =========================
         # Shared terminal (right)
@@ -3649,6 +3651,9 @@ class MainWindow(QMainWindow):
         self.btn_stop_train.setEnabled(False)
 
     def on_train_ok(self, res: dict):
+        report_path = res.get("report_path")
+        if report_path:
+            self.last_training_report_path = str(report_path)
         self.append_log(_tag_line("TRAIN", "=== TRAIN DONE ==="))
         for k, v in res.items():
             self.append_log(_tag_line("TRAIN", f"{k}: {v}"))
@@ -3672,10 +3677,11 @@ class MainWindow(QMainWindow):
     def on_view_report(self):
         """Open the training report PNG in the default system viewer"""
         import os
-        output_dir = self.edit_output_dir.text().strip()
-        if not output_dir:
-            output_dir = "."
-        report_path = os.path.join(output_dir, "training_report.png")
+        report_path = self.last_training_report_path
+        if not report_path:
+            # 舊 Trainer 沒有回傳 report_path 時保留既有固定檔名相容性。
+            output_dir = self.edit_output_dir.text().strip() or "."
+            report_path = os.path.join(output_dir, "training_report.png")
         if os.path.exists(report_path):
             os.startfile(os.path.abspath(report_path))
         else:

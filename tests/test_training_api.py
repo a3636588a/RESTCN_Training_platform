@@ -91,6 +91,7 @@ class TrainingApiTest(unittest.TestCase):
         self.assertEqual(result.backbone, "cnn")
         self.assertEqual(result.model_path, "trained.keras")
         self.assertEqual(result.metadata_path, "trained.pkl")
+        self.assertEqual(result.report_path, "training_report.png")
         self.assertEqual(result.top_1_accuracy, 0.91)
         self.assertEqual(result.f1_score, 0.83)
         self.assertEqual(result.validation_accuracy, 0.90)

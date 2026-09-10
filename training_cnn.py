@@ -475,8 +475,15 @@ def training_run_cnn(
     log_fn(f"[TRAIN] training_time: {training_time}")
     
     # --- Graphical Report ---
+    report_path = None
     try:
-        training_plot_results(history, y_true, y_pred, cfg.id_to_name, cfg.out_model_path)
+        report_path = training_plot_results(
+            history,
+            y_true,
+            y_pred,
+            cfg.id_to_name,
+            cfg.out_model_path,
+        )
         log_fn(f"[TRAIN] Graphical report saved as training_report.png")
     except Exception as e:
         log_fn(f"[TRAIN] [WARN] Failed to generate graphical report: {e}")
@@ -487,6 +494,7 @@ def training_run_cnn(
         "accuracy": history.history['val_accuracy'][-1],
         "history": history.history,
         "report": report,
+        "report_path": report_path,
         "training_time": training_time,
     }
 
@@ -494,7 +502,7 @@ def training_run_cnn(
 # 舊公開名稱仍可使用，但核心與新呼叫端統一走 training_run_cnn。
 train_cnn_from_cfg = training_run_cnn
 
-def training_plot_results(history, y_true, y_pred, id_to_name, model_path):
+def training_plot_results(history, y_true, y_pred, id_to_name, model_path) -> str:
     """
     Generates a 2-panel figure: Training History and Confusion Matrix Heatmap
     """
@@ -548,6 +556,9 @@ def training_plot_results(history, y_true, y_pred, id_to_name, model_path):
     report_path = pathlib.Path(model_path).parent / "training_report.png"
     plt.savefig(str(report_path))
     plt.close()
+    # Both trainers publish this path through TrainingResult so non-UI callers
+    # do not need to duplicate the UI's fixed filename convention.
+    return str(report_path)
 
 if __name__ == "__main__":
     # Example usage (usually called from UI)
