@@ -56,6 +56,7 @@ class RealtimeGestureDetector:
         self.window_row: Dict[int, deque] = {}
         self.window_base: Dict[int, deque] = {}
         self.window_hold: Dict[int, deque] = {}  # ✅ v5：dn 需要 span，所以 hold 也要緩存（對齊 window）
+        self.sample_before_window: Optional[np.ndarray] = None
 
         self.channels: List[int] = [1, 2, 3, 4, 5]
         self.window_len = 30
@@ -151,6 +152,7 @@ class RealtimeGestureDetector:
             self.window_row[ch].clear()
             self.window_base[ch].clear()
             self.window_hold[ch].clear()
+        self.sample_before_window = None
         print("[System] Buffers cleared.")
 
     def push_data(self,
@@ -172,6 +174,19 @@ class RealtimeGestureDetector:
         # halfway through this loop would leave channel buffers misaligned.
         if any(ch not in row_vals or ch not in base_vals for ch in self.channels):
             return
+
+        if self.is_buffer_full():
+            # 保存即將被 rolling buffer 擠出的相鄰樣本。每筆輸入都會走到這裡，
+            # 因此它會隨資料前進，不受 API 的 infer_stride 推論頻率影響。
+            previous_normalized = []
+            for ch in self.channels:
+                previous_row = float(self.window_row[ch][0])
+                previous_base = float(self.window_base[ch][0])
+                previous_hold = float(self.window_hold[ch][0])
+                gain = float(gain_map.get(ch, 1.0))
+                previous_span = max(abs(previous_hold - previous_base) * gain, 1.0)
+                previous_normalized.append((previous_row - previous_base) / previous_span)
+            self.sample_before_window = np.asarray(previous_normalized, dtype=np.float32)
 
         for ch in self.channels:
             r = float(row_vals[ch])
@@ -272,6 +287,12 @@ class RealtimeGestureDetector:
             delta_sig = np.zeros_like(signal_norm)
             # Amplify slope to match training scaling
             delta_sig[1:] = np.diff(signal_norm, axis=0) * self.slope_factor
+            if self.sample_before_window is not None:
+                # Training 先對完整 CSV 做差分再切 Window；使用 Window 前一筆資料，
+                # 讓 rolling detection 的第一個 Delta 保持相同時間連續性。
+                delta_sig[0] = (
+                    signal_norm[0] - self.sample_before_window
+                ) * self.slope_factor
             
             # 組合為 12 通道 (6 Level + 6 Slope)
             combined_signal = np.concatenate([signal_norm, delta_sig], axis=1)
