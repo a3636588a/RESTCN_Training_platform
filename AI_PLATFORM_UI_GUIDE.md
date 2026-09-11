@@ -4,9 +4,9 @@
 
 ## Training table
 
-![Training Data](https://hackmd.io/_uploads/rkbkMBRuzx.png)
+![Training Data](docs/images/ai-platform-training-data.png)
 
-![Training Settings](https://hackmd.io/_uploads/r1eYGBAuzx.png)
+![Training Settings](docs/images/ai-platform-training-settings.png)
 
 ### Augment
 
@@ -37,7 +37,7 @@
 
 ## Detect table
 
-![Detection Settings](https://hackmd.io/_uploads/rkXUhuR_zl.png)
+![Detection Settings](docs/images/ai-platform-detection.png)
 
 ### Dynamic Gesture
 
@@ -91,9 +91,9 @@
 
 ## Gen Code Table
 
-![Gen Code Main](https://hackmd.io/_uploads/rkjPj1ZtGg.png)
+![Gen Code Main](docs/images/ai-platform-codegen-main.png)
 
-![Gen Code Tiers](https://hackmd.io/_uploads/BJh_jyWFfg.png)
+![Gen Code Tiers](docs/images/ai-platform-codegen-tiers.png)
 
 | 名稱 | 說明 |
 |---|---|
