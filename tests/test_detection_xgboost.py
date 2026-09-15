@@ -41,6 +41,20 @@ class XGBoostFeatureAlignmentTest(unittest.TestCase):
 
         np.testing.assert_array_equal(dn, np.array([[0.2, 0.3]], dtype=np.float32))
 
+    def test_dn_augmentation_changes_delta_and_span(self):
+        row = np.array([[120.0]], dtype=np.float32)
+        base = np.array([[100.0]], dtype=np.float32)
+        hold = np.array([[200.0]], dtype=np.float32)
+
+        dn = build_signal(
+            row, base, hold, "dn",
+            delta_gain=2.0,
+            span_gain=2.0,
+            delta_offset=10.0,
+        )
+
+        np.testing.assert_array_equal(dn, np.array([[0.25]], dtype=np.float32))
+
 
 if __name__ == "__main__":
     unittest.main()

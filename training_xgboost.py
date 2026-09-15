@@ -84,36 +84,85 @@ def get_label_from_filename(csv_path: Path) -> str:
     return csv_path.stem.split("-", 1)[0].lower()
 
 
-def build_signal(row: np.ndarray, base: np.ndarray, hold: np.ndarray, signal_mode: str) -> np.ndarray:
-    """建立訓練與即時偵測共用定義的 d 或 dn 訊號。"""
-    d = row - base
+def build_signal(
+    row: np.ndarray,
+    base: np.ndarray,
+    hold: np.ndarray,
+    signal_mode: str,
+    delta_gain=1.0,
+    span_gain=1.0,
+    delta_offset=0.0,
+) -> np.ndarray:
+    """建立 d 或 dn，並在訓練時套用與 CNN 一致的校正資料擴增。"""
+    d = (row - base) * delta_gain + delta_offset
     if signal_mode == "d":
         return d
     if signal_mode == "dn":
-        span = np.maximum(np.abs(hold - base), 1.0)
+        span = np.maximum(np.abs(hold - base) * span_gain, 1.0)
         return d / span
     raise ValueError(f"Unsupported XGBoost signal mode: {signal_mode}")
 
 
-def load_file_windows(csv_path: Path, channels: List[int], window_len: int, window_step: int, signal_mode: str) -> np.ndarray:
+def _resample_columns(values: np.ndarray, new_len: int) -> np.ndarray:
+    if values.shape[0] == new_len:
+        return values.copy()
+    old_x = np.linspace(0.0, 1.0, num=values.shape[0], dtype=np.float32)
+    new_x = np.linspace(0.0, 1.0, num=new_len, dtype=np.float32)
+    return np.column_stack([
+        np.interp(new_x, old_x, values[:, channel])
+        for channel in range(values.shape[1])
+    ]).astype(np.float32)
+
+
+def load_file_windows(
+    csv_path: Path,
+    channels: List[int],
+    window_len: int,
+    window_step: int,
+    signal_mode: str,
+    delta_gain=1.0,
+    span_gain=1.0,
+    delta_offset=0.0,
+    time_warp_factor: float = 1.0,
+) -> np.ndarray:
     """讀取單一 CSV，依設定的視窗長度與步長產生特徵。"""
     df = pd.read_csv(csv_path)
     row = df[[f"ROWCH{channel}" for channel in channels]].to_numpy(np.float32)
     base = df[[f"MOVBASE{channel}" for channel in channels]].to_numpy(np.float32)
     hold = df[[f"HOLDAVG{channel}" for channel in channels]].to_numpy(np.float32)
-    signal = build_signal(row, base, hold, signal_mode)
+    if abs(time_warp_factor - 1.0) > 1e-3:
+        new_len = max(window_len + 5, int(len(row) * time_warp_factor))
+        row = _resample_columns(row, new_len)
+        base = _resample_columns(base, new_len)
+        hold = _resample_columns(hold, new_len)
+    signal = build_signal(row, base, hold, signal_mode, delta_gain, span_gain, delta_offset)
     features = [extract_40_features(signal[start:start + window_len]) for start in range(0, len(signal) - window_len + 1, window_step)]
     return np.asarray(features, dtype=np.float32)
 
 
-def build_dataset(file_paths: Iterable[Path], channels: List[int], window_len: int, window_step: int, signal_mode: str, prefix_to_id: Dict[str, int], stop_event=None) -> Tuple[np.ndarray, np.ndarray]:
+def build_dataset(
+    file_paths: Iterable[Path],
+    channels: List[int],
+    window_len: int,
+    window_step: int,
+    signal_mode: str,
+    prefix_to_id: Dict[str, int],
+    stop_event=None,
+    delta_gain=1.0,
+    span_gain=1.0,
+    delta_offset=0.0,
+    time_warp_factor: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray]:
     x_list, y_list = [], []
     for csv_path in file_paths:
         training_raise_if_cancelled(stop_event)
         label_name = get_label_from_filename(csv_path)
         if label_name not in prefix_to_id:
             continue
-        file_features = load_file_windows(csv_path, channels, window_len, window_step, signal_mode)
+        file_features = load_file_windows(
+            csv_path, channels, window_len, window_step, signal_mode,
+            delta_gain, span_gain, delta_offset, time_warp_factor,
+        )
         if len(file_features):
             x_list.append(file_features)
             y_list.extend([prefix_to_id[label_name]] * len(file_features))
@@ -129,6 +178,47 @@ def _resolve_output_paths(config: TrainingConfig) -> Tuple[Path, Path]:
     if metadata_path.suffix.lower() != ".json":
         metadata_path = metadata_path.with_name(metadata_path.stem + "_labels.json")
     return model_path, metadata_path
+
+
+def _build_augmented_training_dataset(
+    train_files: Iterable[Path],
+    channels: List[int],
+    config: TrainingConfig,
+    signal_mode: str,
+    prefix_to_id: Dict[str, int],
+    stop_event=None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """只對訓練檔建立 aug_copies 份隨機校正與時間變形的視窗。"""
+    if not config.enable_augmentation:
+        return build_dataset(
+            train_files, channels, config.window_len, config.window_step,
+            signal_mode, prefix_to_id, stop_event,
+        )
+
+    rng = np.random.default_rng(config.random_state)
+    x_copies, y_copies = [], []
+    for _ in range(max(1, config.aug_copies)):
+        delta_gain = rng.uniform(config.aug_delta_gain_min, config.aug_delta_gain_max, len(channels))
+        span_gain = rng.uniform(config.aug_span_gain_min, config.aug_span_gain_max, len(channels))
+        delta_offset = np.zeros(len(channels), dtype=np.float32)
+        if config.enable_offset_aug:
+            delta_offset = np.clip(
+                rng.normal(0.0, config.aug_offset_sigma, len(channels)),
+                -config.aug_offset_clip,
+                config.aug_offset_clip,
+            )
+        time_warp_factor = (
+            float(rng.uniform(config.time_warp_min, config.time_warp_max))
+            if config.enable_time_warp else 1.0
+        )
+        X_copy, y_copy = build_dataset(
+            train_files, channels, config.window_len, config.window_step,
+            signal_mode, prefix_to_id, stop_event,
+            delta_gain, span_gain, delta_offset, time_warp_factor,
+        )
+        x_copies.append(X_copy)
+        y_copies.append(y_copy)
+    return np.vstack(x_copies), np.concatenate(y_copies)
 
 
 def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str], None]] = None, progress_fn=None, stop_event=None) -> dict:
@@ -160,10 +250,13 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     file_labels = [prefix_to_id[get_label_from_filename(path)] for path in csv_files]
     train_files, test_files = train_test_split(csv_files, test_size=config.test_size, stratify=file_labels, random_state=config.random_state)
     log(f"[XGBOOST] Files: train={len(train_files)}, test={len(test_files)}")
-    X_train, y_train = build_dataset(train_files, channels, config.window_len, config.window_step, signal_mode, prefix_to_id, stop_event)
+    X_train, y_train = _build_augmented_training_dataset(
+        train_files, channels, config, signal_mode, prefix_to_id, stop_event,
+    )
     X_test, y_test = build_dataset(test_files, channels, config.window_len, config.window_step, signal_mode, prefix_to_id, stop_event)
     log(f"[XGBOOST] X_train: {X_train.shape}")
     log(f"[XGBOOST] X_test : {X_test.shape}")
+    log(f"[XGBOOST] Augmentation: enabled={config.enable_augmentation}, copies={config.aug_copies if config.enable_augmentation else 1}")
     model = XGBClassifier(
         objective="multi:softprob", num_class=len(labels),
         n_estimators=config.xgboost_n_estimators,
