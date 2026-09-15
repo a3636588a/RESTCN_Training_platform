@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from xgboost_detection_model import XGBoostRealtimeGestureDetector
-from training_xgboost import extract_40_features
+from training_xgboost import build_signal, extract_40_features
 
 
 class XGBoostFeatureAlignmentTest(unittest.TestCase):
@@ -31,6 +31,15 @@ class XGBoostFeatureAlignmentTest(unittest.TestCase):
         features = XGBoostRealtimeGestureDetector.extract_40_features(window_d)
 
         self.assertEqual(features.shape, (40,))
+
+    def test_dn_uses_holdavg_span(self):
+        row = np.array([[120.0, 160.0]], dtype=np.float32)
+        base = np.array([[100.0, 100.0]], dtype=np.float32)
+        hold = np.array([[200.0, 300.0]], dtype=np.float32)
+
+        dn = build_signal(row, base, hold, "dn")
+
+        np.testing.assert_array_equal(dn, np.array([[0.2, 0.3]], dtype=np.float32))
 
 
 if __name__ == "__main__":

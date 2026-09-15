@@ -42,6 +42,7 @@ class TrainingConfig:
     xgboost_min_child_weight: float = 2.0
     xgboost_reg_lambda: float = 1.0
     xgboost_log_interval: int = 5
+    xgboost_signal_mode: str = "dn"
 
     output_model_path: str = "gesture_model_cnn_v1.h5"
     output_metadata_path: str = "gesture_model_meta_cnn_v1.pkl"
@@ -111,6 +112,7 @@ class TrainingConfig:
             "xgboost_min_child_weight": 2.0,
             "xgboost_reg_lambda": 1.0,
             "xgboost_log_interval": 5,
+            "xgboost_signal_mode": "dn",
         }
         values.update(overrides)
         return cls(**values)

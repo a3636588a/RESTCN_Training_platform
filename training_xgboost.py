@@ -16,6 +16,7 @@ from training_api import TrainingConfig
 from training_contracts import TrainingProgress, training_raise_if_cancelled
 
 FEATURE_TYPES = ("mean", "std", "peak_to_peak", "mean_abs_diff", "segment_1_mean", "segment_2_mean", "segment_3_mean", "segment_3_minus_1")
+XGBOOST_SIGNAL_MODES = {"d", "dn"}
 
 
 class XGBoostTrainingLogCallback(TrainingCallback):
@@ -83,24 +84,36 @@ def get_label_from_filename(csv_path: Path) -> str:
     return csv_path.stem.split("-", 1)[0].lower()
 
 
-def load_file_windows(csv_path: Path, channels: List[int], window_len: int, window_step: int) -> np.ndarray:
+def build_signal(row: np.ndarray, base: np.ndarray, hold: np.ndarray, signal_mode: str) -> np.ndarray:
+    """建立訓練與即時偵測共用定義的 d 或 dn 訊號。"""
+    d = row - base
+    if signal_mode == "d":
+        return d
+    if signal_mode == "dn":
+        span = np.maximum(np.abs(hold - base), 1.0)
+        return d / span
+    raise ValueError(f"Unsupported XGBoost signal mode: {signal_mode}")
+
+
+def load_file_windows(csv_path: Path, channels: List[int], window_len: int, window_step: int, signal_mode: str) -> np.ndarray:
     """讀取單一 CSV，依設定的視窗長度與步長產生特徵。"""
     df = pd.read_csv(csv_path)
     row = df[[f"ROWCH{channel}" for channel in channels]].to_numpy(np.float32)
     base = df[[f"MOVBASE{channel}" for channel in channels]].to_numpy(np.float32)
-    d = row - base
-    features = [extract_40_features(d[start:start + window_len]) for start in range(0, len(d) - window_len + 1, window_step)]
+    hold = df[[f"HOLDAVG{channel}" for channel in channels]].to_numpy(np.float32)
+    signal = build_signal(row, base, hold, signal_mode)
+    features = [extract_40_features(signal[start:start + window_len]) for start in range(0, len(signal) - window_len + 1, window_step)]
     return np.asarray(features, dtype=np.float32)
 
 
-def build_dataset(file_paths: Iterable[Path], channels: List[int], window_len: int, window_step: int, prefix_to_id: Dict[str, int], stop_event=None) -> Tuple[np.ndarray, np.ndarray]:
+def build_dataset(file_paths: Iterable[Path], channels: List[int], window_len: int, window_step: int, signal_mode: str, prefix_to_id: Dict[str, int], stop_event=None) -> Tuple[np.ndarray, np.ndarray]:
     x_list, y_list = [], []
     for csv_path in file_paths:
         training_raise_if_cancelled(stop_event)
         label_name = get_label_from_filename(csv_path)
         if label_name not in prefix_to_id:
             continue
-        file_features = load_file_windows(csv_path, channels, window_len, window_step)
+        file_features = load_file_windows(csv_path, channels, window_len, window_step, signal_mode)
         if len(file_features):
             x_list.append(file_features)
             y_list.extend([prefix_to_id[label_name]] * len(file_features))
@@ -130,6 +143,9 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
         raise ValueError("XGBoost window_step must be at least 1.")
     if config.xgboost_log_interval < 1:
         raise ValueError("XGBoost log interval must be at least 1.")
+    signal_mode = config.xgboost_signal_mode.strip().lower()
+    if signal_mode not in XGBOOST_SIGNAL_MODES:
+        raise ValueError(f"XGBoost signal mode must be one of {sorted(XGBOOST_SIGNAL_MODES)}.")
     prefix_to_id = config.prefix_to_id
     if not prefix_to_id:
         raise ValueError("XGBoost training requires label_defs.")
@@ -144,8 +160,8 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     file_labels = [prefix_to_id[get_label_from_filename(path)] for path in csv_files]
     train_files, test_files = train_test_split(csv_files, test_size=config.test_size, stratify=file_labels, random_state=config.random_state)
     log(f"[XGBOOST] Files: train={len(train_files)}, test={len(test_files)}")
-    X_train, y_train = build_dataset(train_files, channels, config.window_len, config.window_step, prefix_to_id, stop_event)
-    X_test, y_test = build_dataset(test_files, channels, config.window_len, config.window_step, prefix_to_id, stop_event)
+    X_train, y_train = build_dataset(train_files, channels, config.window_len, config.window_step, signal_mode, prefix_to_id, stop_event)
+    X_test, y_test = build_dataset(test_files, channels, config.window_len, config.window_step, signal_mode, prefix_to_id, stop_event)
     log(f"[XGBOOST] X_train: {X_train.shape}")
     log(f"[XGBOOST] X_test : {X_test.shape}")
     model = XGBClassifier(
@@ -177,7 +193,8 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(model_path))
-    metadata_path.write_text(json.dumps({"labels": labels, "channels": channels, "window_len": config.window_len, "stride": config.window_step, "feature_names": make_feature_names(channels)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata_path.write_text(json.dumps({"labels": labels, "channels": channels, "window_len": config.window_len, "stride": config.window_step, "signal_mode": signal_mode, "feature_names": make_feature_names(channels)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    log(f"[XGBOOST] Signal mode: {signal_mode}")
     log(f"[XGBOOST] Window accuracy: {accuracy:.2%}")
     log(f"[XGBOOST] Model saved: {model_path}")
     log(f"[XGBOOST] Labels saved: {metadata_path}")

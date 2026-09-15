@@ -21,13 +21,15 @@ class XGBoostRealtimeGestureDetector:
         slope_factor: float = 0.0,
         manual_holdavg: Optional[Dict[int, int]] = None,
     ):
-        del slope_factor, manual_holdavg  # API 相容參數；本模型只使用 ROW 與 MOVBASE。
+        del slope_factor  # API 相容參數；XGBoost 不使用 CNN slope。
+        self.manual_holdavg = {int(key): float(value) for key, value in (manual_holdavg or {}).items()}
         metadata_file = Path(metadata_path)
         with metadata_file.open("r", encoding="utf-8") as file:
             self.meta = json.load(file)
 
         self.channels: List[int] = [int(channel) for channel in self.meta["channels"]]
         self.window_len = int(self.meta["window_len"])
+        self.signal_mode = str(self.meta.get("signal_mode", "d")).lower()
         self.feature_cols: List[str] = list(self.meta["feature_names"])
         labels = self.meta["labels"]
         self.id_to_name = {index: str(label) for index, label in enumerate(labels)}
@@ -35,16 +37,20 @@ class XGBoostRealtimeGestureDetector:
 
         if len(self.feature_cols) != len(self.channels) * 8:
             raise ValueError("XGBoost metadata feature count does not match 8 features per channel")
+        if self.signal_mode not in {"d", "dn"}:
+            raise ValueError(f"Unsupported XGBoost signal mode: {self.signal_mode}")
 
         self.clf = XGBClassifier()
         self.clf.load_model(model_path)
         self.window_row = {channel: deque(maxlen=self.window_len) for channel in self.channels}
         self.window_base = {channel: deque(maxlen=self.window_len) for channel in self.channels}
+        self.window_hold = {channel: deque(maxlen=self.window_len) for channel in self.channels}
 
     def clear_buffers(self) -> None:
         for channel in self.channels:
             self.window_row[channel].clear()
             self.window_base[channel].clear()
+            self.window_hold[channel].clear()
 
     def push_data(
         self,
@@ -53,13 +59,19 @@ class XGBoostRealtimeGestureDetector:
         hold_vals: Dict[int, int],
         gain_map: Dict[int, float],
     ) -> None:
-        """保存訓練一致的原始 d = ROW - MOVBASE；不使用 dn、hold 或 gain。"""
-        del hold_vals, gain_map
+        """保存訓練一致的 ROW、MOVBASE、HOLDAVG；不使用 CNN gain。"""
+        del gain_map
         if any(channel not in row_vals or channel not in base_vals for channel in self.channels):
+            return
+        if self.signal_mode == "dn" and any(
+            channel not in hold_vals and channel not in self.manual_holdavg
+            for channel in self.channels
+        ):
             return
         for channel in self.channels:
             self.window_row[channel].append(float(row_vals[channel]))
             self.window_base[channel].append(float(base_vals[channel]))
+            self.window_hold[channel].append(float(hold_vals.get(channel, self.manual_holdavg.get(channel, 0.0))))
 
     def is_buffer_full(self) -> bool:
         return all(len(self.window_row[channel]) == self.window_len for channel in self.channels)
@@ -69,15 +81,13 @@ class XGBoostRealtimeGestureDetector:
         if not self.is_buffer_full():
             return None
 
-        signal_d = np.stack(
-            [
-                np.asarray(self.window_row[channel], dtype=np.float32)
-                - np.asarray(self.window_base[channel], dtype=np.float32)
-                for channel in self.channels
-            ],
-            axis=1,
-        )
-        features = self.extract_40_features(signal_d)
+        row = np.stack([np.asarray(self.window_row[channel], dtype=np.float32) for channel in self.channels], axis=1)
+        base = np.stack([np.asarray(self.window_base[channel], dtype=np.float32) for channel in self.channels], axis=1)
+        hold = np.stack([np.asarray(self.window_hold[channel], dtype=np.float32) for channel in self.channels], axis=1)
+        signal = row - base
+        if self.signal_mode == "dn":
+            signal = signal / np.maximum(np.abs(hold - base), 1.0)
+        features = self.extract_40_features(signal)
         probabilities = self.clf.predict_proba(features.reshape(1, -1))[0]
         pred_id = int(np.argmax(probabilities))
         return ModelPrediction(
