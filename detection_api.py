@@ -13,6 +13,7 @@ import serial
 
 import detection_contracts as contracts
 import detection_model as detect
+import xgboost_detection_model as xgboost_detect
 
 
 __all__ = [
@@ -415,6 +416,9 @@ def _detection_resolve_model_path(config: DetectionConfig, log_fn: Callable[[str
 
     resolved_model_path = config.model_path
     try:
+        # XGBoost 使用 labels JSON，不是 joblib metadata；不需要 CNN 副檔名修正。
+        if _detection_is_xgboost_metadata(config.metadata_path):
+            return resolved_model_path
         if Path(config.metadata_path).exists():
             import joblib
 
@@ -434,6 +438,35 @@ def _detection_resolve_model_path(config: DetectionConfig, log_fn: Callable[[str
     except Exception as exc:
         log_fn(f"[WARN] Failed to pre-check model path: {exc}")
     return resolved_model_path
+
+
+def _detection_is_xgboost_metadata(metadata_path: str) -> bool:
+    """只依 XGBoost labels JSON 選擇獨立的偵測模型，避免誤判其他 JSON。"""
+
+    path = Path(metadata_path)
+    if path.suffix.lower() != ".json" or not path.exists():
+        return False
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return all(key in metadata for key in ("labels", "channels", "window_len", "feature_names"))
+
+
+def _detection_create_detector(config: DetectionConfig, model_path: str):
+    """依 metadata 建立 CNN／MLP 或獨立 XGBoost detector。"""
+
+    detector_type = (
+        xgboost_detect.XGBoostRealtimeGestureDetector
+        if _detection_is_xgboost_metadata(config.metadata_path)
+        else detect.RealtimeGestureDetector
+    )
+    return detector_type(
+        model_path=model_path,
+        metadata_path=config.metadata_path,
+        slope_factor=config.post_slope_factor,
+        manual_holdavg=config.manual_holdavg,
+    )
 
 
 def _detection_emit_result_update(
@@ -504,12 +537,7 @@ def detection_run_serial_from_config(
         effective_log(f"Model: {model_path}")
         effective_log(f"Meta : {config.metadata_path}")
 
-        detector = detect.RealtimeGestureDetector(
-            model_path=model_path,
-            metadata_path=config.metadata_path,
-            slope_factor=config.post_slope_factor,
-            manual_holdavg=config.manual_holdavg,
-        )
+        detector = _detection_create_detector(config, model_path)
         runtime_state = DetectionRuntimeState(
             gain_map={int(channel): 1.0 for channel in detector.channels}
         )
@@ -636,12 +664,7 @@ def detection_run_csv_from_config(
         effective_log(f"Model: {model_path}")
         effective_log(f"Meta : {config.metadata_path}")
 
-        detector = detect.RealtimeGestureDetector(
-            model_path=model_path,
-            metadata_path=config.metadata_path,
-            slope_factor=config.post_slope_factor,
-            manual_holdavg=config.manual_holdavg,
-        )
+        detector = _detection_create_detector(config, model_path)
         runtime_state = DetectionRuntimeState(
             gain_map={int(channel): 1.0 for channel in detector.channels},
             current_base_map={

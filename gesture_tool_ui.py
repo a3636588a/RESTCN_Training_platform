@@ -1573,7 +1573,7 @@ class MainWindow(QMainWindow):
         self.f_model = QFormLayout(self.g_model)
 
         self.combo_model_backbone = QComboBox()
-        self.combo_model_backbone.addItems(["cnn", "ds_tcn"])
+        self.combo_model_backbone.addItems(["cnn", "ds_tcn", "xgboost"])
         self.combo_model_backbone.setCurrentText("cnn")
         self.f_model.addRow("model_backbone:", self.combo_model_backbone)
 

@@ -15,6 +15,7 @@ import training_api
 import training_cnn
 import training_contracts
 import training_ds_tcn
+import training_xgboost
 import training_validation
 
 
@@ -37,6 +38,42 @@ class TrainingApiTest(unittest.TestCase):
         self.assertEqual(self.config.random_state, 42)
         self.assertEqual(self.config.output_model_path, "gesture_model_cnn_v1.h5")
         self.assertEqual(self.config.output_metadata_path, "gesture_model_meta_cnn_v1.pkl")
+
+    def test_xgboost_defaults_are_ready_to_train(self):
+        config = training_api.TrainingConfig.xgboost_defaults(data_dir="dataset")
+
+        self.assertEqual(config.data_dir, "dataset")
+        self.assertEqual(config.ch_list, [1, 2, 3, 4, 5])
+        self.assertEqual(config.window_len, 50)
+        self.assertEqual(config.window_step, 3)
+        self.assertEqual(config.test_size, 0.30)
+        self.assertEqual(config.output_model_path, "gesture_xgboost_40d.json")
+        self.assertEqual(config.xgboost_log_interval, 5)
+
+    def test_xgboost_callback_emits_standard_progress(self):
+        logs = []
+        progress_updates = []
+        callback = training_xgboost.XGBoostTrainingLogCallback(
+            interval=5,
+            total_rounds=300,
+            log_fn=logs.append,
+            progress_fn=progress_updates.append,
+        )
+
+        callback.after_iteration(None, 4, {
+            "validation_0": {"mlogloss": [0.40], "merror": [0.10]},
+            "validation_1": {"mlogloss": [0.50], "merror": [0.20]},
+        })
+
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(progress_updates, [training_contracts.TrainingProgress(
+            epoch=5,
+            total_epochs=300,
+            loss=0.40,
+            accuracy=0.90,
+            validation_loss=0.50,
+            validation_accuracy=0.80,
+        )])
 
     def test_all_trainers_share_the_api_config_class(self):
         self.assertIs(training_cnn.TrainingConfig, training_api.TrainingConfig)
@@ -115,6 +152,23 @@ class TrainingApiTest(unittest.TestCase):
         self.assertIs(run_ds_tcn.call_args.args[0], self.config)
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.backbone, "ds_tcn")
+
+    def test_routes_to_xgboost_and_normalizes_result(self):
+        raw_result = {
+            "model_path": "trained_xgboost.json",
+            "metadata_path": "trained_xgboost_labels.json",
+            "report": {"accuracy": 0.93, "macro avg": {"f1-score": 0.92}},
+            "validation_accuracy": 0.93,
+            "training_time_seconds": 4.0,
+        }
+        with patch("training_xgboost.training_run_xgboost", return_value=raw_result) as run_xgboost:
+            result = training_api.training_run_from_config(self.config, backbone="xgboost")
+
+        self.assertIs(run_xgboost.call_args.args[0], self.config)
+        self.assertEqual(result.backbone, "xgboost")
+        self.assertEqual(result.model_path, "trained_xgboost.json")
+        self.assertEqual(result.metadata_path, "trained_xgboost_labels.json")
+        self.assertEqual(result.validation_accuracy, 0.93)
 
     def test_cancelled_training_returns_cancelled_result(self):
         with patch(

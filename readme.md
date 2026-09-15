@@ -141,6 +141,22 @@ result = training_run_from_config(
 print(result.to_dict())
 ```
 
+XGBoost 可使用建議起始設定，且傳入的欄位都能覆寫：
+
+```python
+xgboost_config = TrainingConfig.xgboost_defaults(
+    data_dir="data",
+    label_defs=[
+        {"prefix": "0", "name": "0", "id": 0},
+        {"prefix": "catch", "name": "catch", "id": 1},
+    ],
+    window_len=50,
+    window_step=3,
+)
+xgboost_result = training_run_from_config(xgboost_config, backbone="xgboost")
+print(xgboost_result.to_dict())
+```
+
 ### 4.3 Training 標準輸出
 
 `progress_fn` 每個 Epoch 接收一個 `TrainingProgress`：

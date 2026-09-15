@@ -32,6 +32,17 @@ class TrainingConfig:
     early_stop_patience: int = 15
     lr_patience: int = 10
 
+    # XGBoost 專用參數；window_len、window_step、channels、test_size 與
+    # random_state 則與其他 backbone 共用。
+    xgboost_n_estimators: int = 300
+    xgboost_max_depth: int = 5
+    xgboost_learning_rate: float = 0.05
+    xgboost_subsample: float = 0.8
+    xgboost_colsample_bytree: float = 0.8
+    xgboost_min_child_weight: float = 2.0
+    xgboost_reg_lambda: float = 1.0
+    xgboost_log_interval: int = 5
+
     output_model_path: str = "gesture_model_cnn_v1.h5"
     output_metadata_path: str = "gesture_model_meta_cnn_v1.pkl"
 
@@ -81,6 +92,29 @@ class TrainingConfig:
     def out_meta_path(self) -> str:
         return self.output_metadata_path
 
+    @classmethod
+    def xgboost_defaults(cls, **overrides) -> "TrainingConfig":
+        """建立 XGBoost 的建議起始設定；傳入的欄位可覆寫任一預設值。"""
+
+        values = {
+            "channels": [1, 2, 3, 4, 5],
+            "window_len": 50,
+            "window_step": 3,
+            "test_size": 0.30,
+            "output_model_path": "gesture_xgboost_40d.json",
+            "output_metadata_path": "gesture_xgboost_40d_labels.json",
+            "xgboost_n_estimators": 300,
+            "xgboost_max_depth": 5,
+            "xgboost_learning_rate": 0.05,
+            "xgboost_subsample": 0.8,
+            "xgboost_colsample_bytree": 0.8,
+            "xgboost_min_child_weight": 2.0,
+            "xgboost_reg_lambda": 1.0,
+            "xgboost_log_interval": 5,
+        }
+        values.update(overrides)
+        return cls(**values)
+
 
 def _training_resolve_model_path(config) -> str:
     """Mirror legacy trainer extension handling when normalizing old results."""
@@ -107,7 +141,7 @@ def training_run_from_config(
     """
 
     selected_backbone = (backbone or "cnn").strip().lower()
-    if selected_backbone not in {"cnn", "ds_tcn"}:
+    if selected_backbone not in {"cnn", "ds_tcn", "xgboost"}:
         raise ValueError(f"Unsupported training backbone: {selected_backbone}")
 
     # Trainers import TrainingConfig from this module for one shared config
@@ -115,9 +149,17 @@ def training_run_from_config(
     # form training_api -> trainer -> training_api during module initialization.
     import training_cnn as cnn_trainer
     import training_ds_tcn as ds_tcn_trainer
+    import training_xgboost as xgboost_trainer
 
     try:
-        if selected_backbone == "ds_tcn":
+        if selected_backbone == "xgboost":
+            raw_result = xgboost_trainer.training_run_xgboost(
+                config,
+                log_fn=log_fn,
+                progress_fn=progress_fn,
+                stop_event=stop_event,
+            )
+        elif selected_backbone == "ds_tcn":
             raw_result = ds_tcn_trainer.training_run_ds_tcn(
                 config,
                 log_fn=log_fn,
