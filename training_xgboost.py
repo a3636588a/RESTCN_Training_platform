@@ -17,7 +17,14 @@ from training_contracts import TrainingProgress, training_raise_if_cancelled
 
 STAT_FEATURE_TYPES = ("mean", "std", "peak_to_peak", "mean_abs_diff", "segment_1_mean", "segment_2_mean", "segment_3_mean", "segment_3_minus_1")
 TIME_SEGMENT_COUNT = 10
-XGBOOST_FEATURE_SETS = {"stats40": len(STAT_FEATURE_TYPES), "time140": len(STAT_FEATURE_TYPES) + TIME_SEGMENT_COUNT * 2}
+WAVE_SAMPLE_COUNT = 25
+WAVE_LANDMARK_TYPES = ("max_position", "min_position", "max_rise_position", "max_fall_position")
+WAVE_DYNAMIC_TYPES = ("total_variation", "positive_slope_ratio", "negative_slope_ratio", "fft_low_energy", "fft_mid_energy", "fft_high_energy")
+XGBOOST_FEATURE_SETS = {
+    "stats40": len(STAT_FEATURE_TYPES),
+    "time140": len(STAT_FEATURE_TYPES) + TIME_SEGMENT_COUNT * 2,
+    "wave215": len(STAT_FEATURE_TYPES) + WAVE_SAMPLE_COUNT + len(WAVE_LANDMARK_TYPES) + len(WAVE_DYNAMIC_TYPES),
+}
 XGBOOST_SIGNAL_MODES = {"d", "dn"}
 
 
@@ -75,6 +82,22 @@ def make_feature_names(channels: Iterable[int], feature_set: str) -> List[str]:
             for index in range(1, TIME_SEGMENT_COUNT + 1)
             for channel in channels
         )
+    if feature_set == "wave215":
+        names.extend(
+            f"wave_sample_{index:02d}_ch{channel}"
+            for index in range(1, WAVE_SAMPLE_COUNT + 1)
+            for channel in channels
+        )
+        names.extend(
+            f"{feature_type}_ch{channel}"
+            for feature_type in WAVE_LANDMARK_TYPES
+            for channel in channels
+        )
+        names.extend(
+            f"{feature_type}_ch{channel}"
+            for feature_type in WAVE_DYNAMIC_TYPES
+            for channel in channels
+        )
     return names
 
 
@@ -95,18 +118,47 @@ def extract_40_features(window_d: np.ndarray) -> np.ndarray:
 
 
 def extract_features(window_d: np.ndarray, feature_set: str) -> np.ndarray:
-    """依 feature_set 建立統計特徵，time140 另保留十段波形形狀。"""
+    """依 feature_set 建立統計特徵、分段摘要或保留波形形狀的特徵。"""
     if feature_set not in XGBOOST_FEATURE_SETS:
         raise ValueError(f"Unsupported XGBoost feature set: {feature_set}")
     static_features = extract_40_features(window_d)
     if feature_set == "stats40":
         return static_features
-    if window_d.shape[0] < TIME_SEGMENT_COUNT:
-        raise ValueError(f"time140 requires at least {TIME_SEGMENT_COUNT} rows, got {window_d.shape[0]}")
-    segments = np.array_split(window_d, TIME_SEGMENT_COUNT, axis=0)
-    segment_means = [np.mean(segment, axis=0) for segment in segments]
-    segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
-    return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
+    if feature_set == "time140":
+        if window_d.shape[0] < TIME_SEGMENT_COUNT:
+            raise ValueError(f"time140 requires at least {TIME_SEGMENT_COUNT} rows, got {window_d.shape[0]}")
+        segments = np.array_split(window_d, TIME_SEGMENT_COUNT, axis=0)
+        segment_means = [np.mean(segment, axis=0) for segment in segments]
+        segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
+        return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
+
+    # wave215: 以等距內插保留整段形狀，再加入關鍵位置與整體動態特徵。
+    old_x = np.linspace(0.0, 1.0, num=window_d.shape[0], dtype=np.float32)
+    sample_x = np.linspace(0.0, 1.0, num=WAVE_SAMPLE_COUNT, dtype=np.float32)
+    waveform = np.column_stack([
+        np.interp(sample_x, old_x, window_d[:, channel])
+        for channel in range(window_d.shape[1])
+    ]).astype(np.float32)
+    diffs = np.diff(window_d, axis=0)
+    max_position = np.argmax(window_d, axis=0) / max(window_d.shape[0] - 1, 1)
+    min_position = np.argmin(window_d, axis=0) / max(window_d.shape[0] - 1, 1)
+    max_rise_position = np.argmax(diffs, axis=0) / max(diffs.shape[0] - 1, 1)
+    max_fall_position = np.argmin(diffs, axis=0) / max(diffs.shape[0] - 1, 1)
+    total_variation = np.sum(np.abs(diffs), axis=0)
+    variation_floor = np.maximum(total_variation, 1e-6)
+    positive_slope_ratio = np.sum(np.maximum(diffs, 0.0), axis=0) / variation_floor
+    negative_slope_ratio = np.sum(np.maximum(-diffs, 0.0), axis=0) / variation_floor
+    spectrum = np.abs(np.fft.rfft(window_d - np.mean(window_d, axis=0), axis=0)) ** 2
+    frequency_bands = np.array_split(spectrum[1:], 3, axis=0)
+    band_energy = np.asarray([np.sum(band, axis=0) for band in frequency_bands])
+    band_energy /= np.maximum(np.sum(band_energy, axis=0, keepdims=True), 1e-6)
+    return np.concatenate([
+        static_features,
+        waveform.reshape(-1),
+        max_position, min_position, max_rise_position, max_fall_position,
+        total_variation, positive_slope_ratio, negative_slope_ratio,
+        *band_energy,
+    ]).astype(np.float32)
 
 
 def get_label_from_filename(csv_path: Path) -> str:

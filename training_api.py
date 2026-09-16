@@ -43,8 +43,8 @@ class TrainingConfig:
     xgboost_reg_lambda: float = 1.0
     xgboost_log_interval: int = 5
     xgboost_signal_mode: str = "dn"
-    # stats40 僅保留統計摘要；time140 額外保留十段平均與斜率。
-    xgboost_feature_set: str = "time140"
+    # stats40 僅保留統計摘要；time140 保留分段摘要；wave215 保留降採樣波形。
+    xgboost_feature_set: str = "wave215"
 
     output_model_path: str = "gesture_model_cnn_v1.h5"
     output_metadata_path: str = "gesture_model_meta_cnn_v1.pkl"
@@ -104,8 +104,8 @@ class TrainingConfig:
             "window_len": 50,
             "window_step": 3,
             "test_size": 0.30,
-            "output_model_path": "gesture_xgboost_time140.json",
-            "output_metadata_path": "gesture_xgboost_time140_labels.json",
+            "output_model_path": "gesture_xgboost_wave215.json",
+            "output_metadata_path": "gesture_xgboost_wave215_labels.json",
             "xgboost_n_estimators": 300,
             "xgboost_max_depth": 5,
             "xgboost_learning_rate": 0.05,
@@ -115,7 +115,7 @@ class TrainingConfig:
             "xgboost_reg_lambda": 1.0,
             "xgboost_log_interval": 5,
             "xgboost_signal_mode": "dn",
-            "xgboost_feature_set": "time140",
+            "xgboost_feature_set": "wave215",
         }
         values.update(overrides)
         return cls(**values)

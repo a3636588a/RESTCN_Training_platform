@@ -12,7 +12,10 @@ from detection_contracts import ModelPrediction
 
 
 TIME_SEGMENT_COUNT = 10
-FEATURES_PER_CHANNEL = {"stats40": 8, "time140": 28}
+WAVE_SAMPLE_COUNT = 25
+WAVE_LANDMARK_COUNT = 4
+WAVE_DYNAMIC_COUNT = 6
+FEATURES_PER_CHANNEL = {"stats40": 8, "time140": 28, "wave215": 8 + WAVE_SAMPLE_COUNT + WAVE_LANDMARK_COUNT + WAVE_DYNAMIC_COUNT}
 
 
 class XGBoostRealtimeGestureDetector:
@@ -129,11 +132,38 @@ class XGBoostRealtimeGestureDetector:
         static_features = cls.extract_40_features(window_d)
         if feature_set == "stats40":
             return static_features
-        if feature_set != "time140":
+        if feature_set == "time140":
+            if window_d.shape[0] < TIME_SEGMENT_COUNT:
+                raise ValueError(f"time140 requires at least {TIME_SEGMENT_COUNT} rows, got {window_d.shape[0]}")
+            segments = np.array_split(window_d, TIME_SEGMENT_COUNT, axis=0)
+            segment_means = [np.mean(segment, axis=0) for segment in segments]
+            segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
+            return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
+        if feature_set != "wave215":
             raise ValueError(f"Unsupported XGBoost feature set: {feature_set}")
-        if window_d.shape[0] < TIME_SEGMENT_COUNT:
-            raise ValueError(f"time140 requires at least {TIME_SEGMENT_COUNT} rows, got {window_d.shape[0]}")
-        segments = np.array_split(window_d, TIME_SEGMENT_COUNT, axis=0)
-        segment_means = [np.mean(segment, axis=0) for segment in segments]
-        segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
-        return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
+        old_x = np.linspace(0.0, 1.0, num=window_d.shape[0], dtype=np.float32)
+        sample_x = np.linspace(0.0, 1.0, num=WAVE_SAMPLE_COUNT, dtype=np.float32)
+        waveform = np.column_stack([
+            np.interp(sample_x, old_x, window_d[:, channel])
+            for channel in range(window_d.shape[1])
+        ]).astype(np.float32)
+        diffs = np.diff(window_d, axis=0)
+        max_position = np.argmax(window_d, axis=0) / max(window_d.shape[0] - 1, 1)
+        min_position = np.argmin(window_d, axis=0) / max(window_d.shape[0] - 1, 1)
+        max_rise_position = np.argmax(diffs, axis=0) / max(diffs.shape[0] - 1, 1)
+        max_fall_position = np.argmin(diffs, axis=0) / max(diffs.shape[0] - 1, 1)
+        total_variation = np.sum(np.abs(diffs), axis=0)
+        variation_floor = np.maximum(total_variation, 1e-6)
+        positive_slope_ratio = np.sum(np.maximum(diffs, 0.0), axis=0) / variation_floor
+        negative_slope_ratio = np.sum(np.maximum(-diffs, 0.0), axis=0) / variation_floor
+        spectrum = np.abs(np.fft.rfft(window_d - np.mean(window_d, axis=0), axis=0)) ** 2
+        frequency_bands = np.array_split(spectrum[1:], 3, axis=0)
+        band_energy = np.asarray([np.sum(band, axis=0) for band in frequency_bands])
+        band_energy /= np.maximum(np.sum(band_energy, axis=0, keepdims=True), 1e-6)
+        return np.concatenate([
+            static_features,
+            waveform.reshape(-1),
+            max_position, min_position, max_rise_position, max_fall_position,
+            total_variation, positive_slope_ratio, negative_slope_ratio,
+            *band_energy,
+        ]).astype(np.float32)

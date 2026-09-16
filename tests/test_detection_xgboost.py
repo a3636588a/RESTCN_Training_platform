@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from xgboost_detection_model import XGBoostRealtimeGestureDetector
-from training_xgboost import build_signal, extract_40_features, extract_features
+from training_xgboost import build_signal, extract_40_features, extract_features, make_feature_names
 
 
 class XGBoostFeatureAlignmentTest(unittest.TestCase):
@@ -40,6 +40,20 @@ class XGBoostFeatureAlignmentTest(unittest.TestCase):
 
         np.testing.assert_array_equal(actual, expected)
         self.assertEqual(actual.shape, (140,))
+
+    def test_wave215_feature_builder_matches_training(self):
+        window_d = np.arange(250, dtype=np.float32).reshape(50, 5)
+
+        expected = extract_features(window_d, "wave215")
+        actual = XGBoostRealtimeGestureDetector.extract_features(window_d, "wave215")
+
+        np.testing.assert_array_equal(actual, expected)
+        self.assertEqual(actual.shape, (215,))
+
+    def test_feature_name_counts_match_feature_sets(self):
+        self.assertEqual(len(make_feature_names([1, 2, 3, 4, 5], "stats40")), 40)
+        self.assertEqual(len(make_feature_names([1, 2, 3, 4, 5], "time140")), 140)
+        self.assertEqual(len(make_feature_names([1, 2, 3, 4, 5], "wave215")), 215)
 
     def test_dn_uses_holdavg_span(self):
         row = np.array([[120.0, 160.0]], dtype=np.float32)
