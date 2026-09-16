@@ -1,4 +1,4 @@
-"""XGBoost 40 維手勢模型的即時偵測器。"""
+"""XGBoost 統計與時間特徵手勢模型的即時偵測器。"""
 
 from collections import deque
 import json
@@ -9,6 +9,10 @@ import numpy as np
 from xgboost import XGBClassifier
 
 from detection_contracts import ModelPrediction
+
+
+TIME_SEGMENT_COUNT = 10
+FEATURES_PER_CHANNEL = {"stats40": 8, "time140": 28}
 
 
 class XGBoostRealtimeGestureDetector:
@@ -30,13 +34,16 @@ class XGBoostRealtimeGestureDetector:
         self.channels: List[int] = [int(channel) for channel in self.meta["channels"]]
         self.window_len = int(self.meta["window_len"])
         self.signal_mode = str(self.meta.get("signal_mode", "d")).lower()
+        self.feature_set = str(self.meta.get("feature_set", "stats40")).lower()
         self.feature_cols: List[str] = list(self.meta["feature_names"])
         labels = self.meta["labels"]
         self.id_to_name = {index: str(label) for index, label in enumerate(labels)}
         self.model_type = "xgboost"
 
-        if len(self.feature_cols) != len(self.channels) * 8:
-            raise ValueError("XGBoost metadata feature count does not match 8 features per channel")
+        if self.feature_set not in FEATURES_PER_CHANNEL:
+            raise ValueError(f"Unsupported XGBoost feature set: {self.feature_set}")
+        if len(self.feature_cols) != len(self.channels) * FEATURES_PER_CHANNEL[self.feature_set]:
+            raise ValueError("XGBoost metadata feature count does not match the configured feature set")
         if self.signal_mode not in {"d", "dn"}:
             raise ValueError(f"Unsupported XGBoost signal mode: {self.signal_mode}")
 
@@ -87,7 +94,7 @@ class XGBoostRealtimeGestureDetector:
         signal = row - base
         if self.signal_mode == "dn":
             signal = signal / np.maximum(np.abs(hold - base), 1.0)
-        features = self.extract_40_features(signal)
+        features = self.extract_features(signal, self.feature_set)
         probabilities = self.clf.predict_proba(features.reshape(1, -1))[0]
         pred_id = int(np.argmax(probabilities))
         return ModelPrediction(
@@ -116,3 +123,17 @@ class XGBoostRealtimeGestureDetector:
             [mean, std, peak_to_peak, mean_abs_diff, segment_1_mean,
              segment_2_mean, segment_3_mean, segment_3_minus_1]
         ).astype(np.float32)
+
+    @classmethod
+    def extract_features(cls, window_d: np.ndarray, feature_set: str) -> np.ndarray:
+        static_features = cls.extract_40_features(window_d)
+        if feature_set == "stats40":
+            return static_features
+        if feature_set != "time140":
+            raise ValueError(f"Unsupported XGBoost feature set: {feature_set}")
+        if window_d.shape[0] < TIME_SEGMENT_COUNT:
+            raise ValueError(f"time140 requires at least {TIME_SEGMENT_COUNT} rows, got {window_d.shape[0]}")
+        segments = np.array_split(window_d, TIME_SEGMENT_COUNT, axis=0)
+        segment_means = [np.mean(segment, axis=0) for segment in segments]
+        segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
+        return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)

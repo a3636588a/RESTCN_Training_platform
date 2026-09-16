@@ -1,4 +1,4 @@
-"""XGBoost 40 維特徵手勢訓練器。"""
+"""XGBoost 統計與時間特徵手勢訓練器。"""
 
 import json
 import time
@@ -15,7 +15,9 @@ from xgboost.callback import TrainingCallback
 from training_api import TrainingConfig
 from training_contracts import TrainingProgress, training_raise_if_cancelled
 
-FEATURE_TYPES = ("mean", "std", "peak_to_peak", "mean_abs_diff", "segment_1_mean", "segment_2_mean", "segment_3_mean", "segment_3_minus_1")
+STAT_FEATURE_TYPES = ("mean", "std", "peak_to_peak", "mean_abs_diff", "segment_1_mean", "segment_2_mean", "segment_3_mean", "segment_3_minus_1")
+TIME_SEGMENT_COUNT = 10
+XGBOOST_FEATURE_SETS = {"stats40": len(STAT_FEATURE_TYPES), "time140": len(STAT_FEATURE_TYPES) + TIME_SEGMENT_COUNT * 2}
 XGBOOST_SIGNAL_MODES = {"d", "dn"}
 
 
@@ -60,8 +62,20 @@ class XGBoostTrainingLogCallback(TrainingCallback):
         return False
 
 
-def make_feature_names(channels: Iterable[int]) -> List[str]:
-    return [f"{feature_type}_ch{channel}" for feature_type in FEATURE_TYPES for channel in channels]
+def make_feature_names(channels: Iterable[int], feature_set: str) -> List[str]:
+    names = [f"{feature_type}_ch{channel}" for feature_type in STAT_FEATURE_TYPES for channel in channels]
+    if feature_set == "time140":
+        names.extend(
+            f"time_segment_{index:02d}_mean_ch{channel}"
+            for index in range(1, TIME_SEGMENT_COUNT + 1)
+            for channel in channels
+        )
+        names.extend(
+            f"time_segment_{index:02d}_slope_ch{channel}"
+            for index in range(1, TIME_SEGMENT_COUNT + 1)
+            for channel in channels
+        )
+    return names
 
 
 def extract_40_features(window_d: np.ndarray) -> np.ndarray:
@@ -78,6 +92,21 @@ def extract_40_features(window_d: np.ndarray) -> np.ndarray:
     segment_3_mean = np.mean(segment_3, axis=0)
     segment_3_minus_1 = segment_3_mean - segment_1_mean
     return np.concatenate([mean, std, peak_to_peak, mean_abs_diff, segment_1_mean, segment_2_mean, segment_3_mean, segment_3_minus_1]).astype(np.float32)
+
+
+def extract_features(window_d: np.ndarray, feature_set: str) -> np.ndarray:
+    """依 feature_set 建立統計特徵，time140 另保留十段波形形狀。"""
+    if feature_set not in XGBOOST_FEATURE_SETS:
+        raise ValueError(f"Unsupported XGBoost feature set: {feature_set}")
+    static_features = extract_40_features(window_d)
+    if feature_set == "stats40":
+        return static_features
+    if window_d.shape[0] < TIME_SEGMENT_COUNT:
+        raise ValueError(f"time140 requires at least {TIME_SEGMENT_COUNT} rows, got {window_d.shape[0]}")
+    segments = np.array_split(window_d, TIME_SEGMENT_COUNT, axis=0)
+    segment_means = [np.mean(segment, axis=0) for segment in segments]
+    segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
+    return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
 
 
 def get_label_from_filename(csv_path: Path) -> str:
@@ -120,6 +149,7 @@ def load_file_windows(
     window_len: int,
     window_step: int,
     signal_mode: str,
+    feature_set: str,
     delta_gain=1.0,
     span_gain=1.0,
     delta_offset=0.0,
@@ -136,7 +166,7 @@ def load_file_windows(
         base = _resample_columns(base, new_len)
         hold = _resample_columns(hold, new_len)
     signal = build_signal(row, base, hold, signal_mode, delta_gain, span_gain, delta_offset)
-    features = [extract_40_features(signal[start:start + window_len]) for start in range(0, len(signal) - window_len + 1, window_step)]
+    features = [extract_features(signal[start:start + window_len], feature_set) for start in range(0, len(signal) - window_len + 1, window_step)]
     return np.asarray(features, dtype=np.float32)
 
 
@@ -146,6 +176,7 @@ def build_dataset(
     window_len: int,
     window_step: int,
     signal_mode: str,
+    feature_set: str,
     prefix_to_id: Dict[str, int],
     stop_event=None,
     delta_gain=1.0,
@@ -160,7 +191,7 @@ def build_dataset(
         if label_name not in prefix_to_id:
             continue
         file_features = load_file_windows(
-            csv_path, channels, window_len, window_step, signal_mode,
+            csv_path, channels, window_len, window_step, signal_mode, feature_set,
             delta_gain, span_gain, delta_offset, time_warp_factor,
         )
         if len(file_features):
@@ -185,6 +216,7 @@ def _build_augmented_training_dataset(
     channels: List[int],
     config: TrainingConfig,
     signal_mode: str,
+    feature_set: str,
     prefix_to_id: Dict[str, int],
     stop_event=None,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -192,7 +224,7 @@ def _build_augmented_training_dataset(
     if not config.enable_augmentation:
         return build_dataset(
             train_files, channels, config.window_len, config.window_step,
-            signal_mode, prefix_to_id, stop_event,
+            signal_mode, feature_set, prefix_to_id, stop_event,
         )
 
     rng = np.random.default_rng(config.random_state)
@@ -213,7 +245,7 @@ def _build_augmented_training_dataset(
         )
         X_copy, y_copy = build_dataset(
             train_files, channels, config.window_len, config.window_step,
-            signal_mode, prefix_to_id, stop_event,
+            signal_mode, feature_set, prefix_to_id, stop_event,
             delta_gain, span_gain, delta_offset, time_warp_factor,
         )
         x_copies.append(X_copy)
@@ -236,6 +268,11 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     signal_mode = config.xgboost_signal_mode.strip().lower()
     if signal_mode not in XGBOOST_SIGNAL_MODES:
         raise ValueError(f"XGBoost signal mode must be one of {sorted(XGBOOST_SIGNAL_MODES)}.")
+    feature_set = config.xgboost_feature_set.strip().lower()
+    if feature_set not in XGBOOST_FEATURE_SETS:
+        raise ValueError(f"XGBoost feature set must be one of {sorted(XGBOOST_FEATURE_SETS)}.")
+    if feature_set == "time140" and config.window_len < TIME_SEGMENT_COUNT:
+        raise ValueError(f"XGBoost time140 requires window_len >= {TIME_SEGMENT_COUNT}.")
     prefix_to_id = config.prefix_to_id
     if not prefix_to_id:
         raise ValueError("XGBoost training requires label_defs.")
@@ -251,9 +288,9 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     train_files, test_files = train_test_split(csv_files, test_size=config.test_size, stratify=file_labels, random_state=config.random_state)
     log(f"[XGBOOST] Files: train={len(train_files)}, test={len(test_files)}")
     X_train, y_train = _build_augmented_training_dataset(
-        train_files, channels, config, signal_mode, prefix_to_id, stop_event,
+        train_files, channels, config, signal_mode, feature_set, prefix_to_id, stop_event,
     )
-    X_test, y_test = build_dataset(test_files, channels, config.window_len, config.window_step, signal_mode, prefix_to_id, stop_event)
+    X_test, y_test = build_dataset(test_files, channels, config.window_len, config.window_step, signal_mode, feature_set, prefix_to_id, stop_event)
     log(f"[XGBOOST] X_train: {X_train.shape}")
     log(f"[XGBOOST] X_test : {X_test.shape}")
     log(f"[XGBOOST] Augmentation: enabled={config.enable_augmentation}, copies={config.aug_copies if config.enable_augmentation else 1}")
@@ -286,8 +323,9 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(model_path))
-    metadata_path.write_text(json.dumps({"labels": labels, "channels": channels, "window_len": config.window_len, "stride": config.window_step, "signal_mode": signal_mode, "feature_names": make_feature_names(channels)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    metadata_path.write_text(json.dumps({"labels": labels, "channels": channels, "window_len": config.window_len, "stride": config.window_step, "signal_mode": signal_mode, "feature_set": feature_set, "features_per_channel": XGBOOST_FEATURE_SETS[feature_set], "feature_names": make_feature_names(channels, feature_set)}, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"[XGBOOST] Signal mode: {signal_mode}")
+    log(f"[XGBOOST] Feature set: {feature_set} ({XGBOOST_FEATURE_SETS[feature_set] * len(channels)} features)")
     log(f"[XGBOOST] Window accuracy: {accuracy:.2%}")
     log(f"[XGBOOST] Model saved: {model_path}")
     log(f"[XGBOOST] Labels saved: {metadata_path}")

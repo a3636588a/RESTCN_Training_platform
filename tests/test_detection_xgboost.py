@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from xgboost_detection_model import XGBoostRealtimeGestureDetector
-from training_xgboost import build_signal, extract_40_features
+from training_xgboost import build_signal, extract_40_features, extract_features
 
 
 class XGBoostFeatureAlignmentTest(unittest.TestCase):
@@ -31,6 +31,15 @@ class XGBoostFeatureAlignmentTest(unittest.TestCase):
         features = XGBoostRealtimeGestureDetector.extract_40_features(window_d)
 
         self.assertEqual(features.shape, (40,))
+
+    def test_time140_feature_builder_matches_training(self):
+        window_d = np.arange(250, dtype=np.float32).reshape(50, 5)
+
+        expected = extract_features(window_d, "time140")
+        actual = XGBoostRealtimeGestureDetector.extract_features(window_d, "time140")
+
+        np.testing.assert_array_equal(actual, expected)
+        self.assertEqual(actual.shape, (140,))
 
     def test_dn_uses_holdavg_span(self):
         row = np.array([[120.0, 160.0]], dtype=np.float32)

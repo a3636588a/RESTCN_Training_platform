@@ -47,8 +47,9 @@ class TrainingApiTest(unittest.TestCase):
         self.assertEqual(config.window_len, 50)
         self.assertEqual(config.window_step, 3)
         self.assertEqual(config.test_size, 0.30)
-        self.assertEqual(config.output_model_path, "gesture_xgboost_40d.json")
+        self.assertEqual(config.output_model_path, "gesture_xgboost_time140.json")
         self.assertEqual(config.xgboost_log_interval, 5)
+        self.assertEqual(config.xgboost_feature_set, "time140")
 
     def test_xgboost_callback_emits_standard_progress(self):
         logs = []
