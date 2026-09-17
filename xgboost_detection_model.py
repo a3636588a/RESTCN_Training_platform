@@ -37,6 +37,8 @@ class XGBoostRealtimeGestureDetector:
         self.channels: List[int] = [int(channel) for channel in self.meta["channels"]]
         self.window_len = int(self.meta["window_len"])
         self.signal_mode = str(self.meta.get("signal_mode", "d")).lower()
+        # 舊模型未記錄此欄位，保留過去可使用負差值的推論結果。
+        self.negative_delta_mode = str(self.meta.get("negative_delta_mode", "allow")).lower()
         self.feature_set = str(self.meta.get("feature_set", "stats40")).lower()
         self.feature_cols: List[str] = list(self.meta["feature_names"])
         labels = self.meta["labels"]
@@ -49,6 +51,8 @@ class XGBoostRealtimeGestureDetector:
             raise ValueError("XGBoost metadata feature count does not match the configured feature set")
         if self.signal_mode not in {"d", "dn"}:
             raise ValueError(f"Unsupported XGBoost signal mode: {self.signal_mode}")
+        if self.negative_delta_mode not in {"allow", "clip_zero"}:
+            raise ValueError(f"Unsupported XGBoost negative delta mode: {self.negative_delta_mode}")
 
         self.clf = XGBClassifier()
         self.clf.load_model(model_path)
@@ -95,6 +99,8 @@ class XGBoostRealtimeGestureDetector:
         base = np.stack([np.asarray(self.window_base[channel], dtype=np.float32) for channel in self.channels], axis=1)
         hold = np.stack([np.asarray(self.window_hold[channel], dtype=np.float32) for channel in self.channels], axis=1)
         signal = row - base
+        if self.negative_delta_mode == "clip_zero":
+            signal = np.maximum(signal, 0.0)
         if self.signal_mode == "dn":
             signal = signal / np.maximum(np.abs(hold - base), 1.0)
         features = self.extract_features(signal, self.feature_set)

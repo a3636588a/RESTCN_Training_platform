@@ -43,6 +43,8 @@ class TrainingConfig:
     xgboost_reg_lambda: float = 1.0
     xgboost_log_interval: int = 5
     xgboost_signal_mode: str = "dn"
+    # 手勢差值不應為負時，將 ROW - MOVBASE 的負值截斷為 0。
+    xgboost_negative_delta_mode: str = "clip_zero"
     # stats40 僅保留統計摘要；time140 保留分段摘要；wave215 保留降採樣波形。
     xgboost_feature_set: str = "wave215"
 
@@ -115,6 +117,7 @@ class TrainingConfig:
             "xgboost_reg_lambda": 1.0,
             "xgboost_log_interval": 5,
             "xgboost_signal_mode": "dn",
+            "xgboost_negative_delta_mode": "clip_zero",
             "xgboost_feature_set": "wave215",
         }
         values.update(overrides)

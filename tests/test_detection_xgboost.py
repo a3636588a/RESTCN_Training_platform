@@ -64,6 +64,15 @@ class XGBoostFeatureAlignmentTest(unittest.TestCase):
 
         np.testing.assert_array_equal(dn, np.array([[0.2, 0.3]], dtype=np.float32))
 
+    def test_clip_zero_removes_negative_delta_before_dn(self):
+        row = np.array([[80.0, 120.0]], dtype=np.float32)
+        base = np.array([[100.0, 100.0]], dtype=np.float32)
+        hold = np.array([[200.0, 200.0]], dtype=np.float32)
+
+        dn = build_signal(row, base, hold, "dn", negative_delta_mode="clip_zero")
+
+        np.testing.assert_array_equal(dn, np.array([[0.0, 0.2]], dtype=np.float32))
+
     def test_dn_augmentation_changes_delta_and_span(self):
         row = np.array([[120.0]], dtype=np.float32)
         base = np.array([[100.0]], dtype=np.float32)
