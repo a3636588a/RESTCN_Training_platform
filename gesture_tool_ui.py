@@ -1414,8 +1414,9 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.tab_gencode_cnn, "Gen Code (CNN)")
         # self.tabs.addTab(self.tab_build, "Build") # Hidden by default (15-click unlock)
         self.tabs.addTab(self.tab_autobuild, "Auto Build")
-        # 保留 Gen Code／Auto Build 的頁面、Signal 與 operation，只從一般 UI 隱藏。
+        # 保留 TinyOL／Gen Code／Auto Build 的頁面、Signal 與 operation，只從一般 UI 隱藏。
         # 使用 setTabVisible 而非 removeTab，避免破壞既有 Widget lifecycle。
+        self.tabs.setTabVisible(self.tabs.indexOf(self.tab_tinyol), False)
         self.tabs.setTabVisible(self.tabs.indexOf(self.tab_gencode_cnn), False)
         self.tabs.setTabVisible(self.tabs.indexOf(self.tab_autobuild), False)
 
@@ -1967,6 +1968,10 @@ class MainWindow(QMainWindow):
         self.combo_model_backbone = QComboBox()
         self.combo_model_backbone.addItems(["cnn", "ds_tcn"])
         self.combo_model_backbone.setCurrentText("cnn")
+        # This UI build only supports the deployed CNN training pipeline.
+        # Keep the value visible, but prevent a UI selection from diverging
+        # from the model type used by the training worker.
+        self.combo_model_backbone.setEnabled(False)
         self.f_model.addRow("model_backbone:", self.combo_model_backbone)
 
         self.dsb_test_size = NoWheelDoubleSpinBox()
@@ -2295,7 +2300,7 @@ class MainWindow(QMainWindow):
         vh = QVBoxLayout(g_hold)
 
         self.chk_use_manual = QCheckBox("Enable manual holdavg")
-        self.chk_use_manual.setChecked(True)
+        self.chk_use_manual.setChecked(False)
         vh.addWidget(self.chk_use_manual)
 
         self.tbl_hold = QTableWidget(6, 2)
@@ -2311,13 +2316,14 @@ class MainWindow(QMainWindow):
             self.tbl_hold.setItem(i, 1, QTableWidgetItem(str(v)))
 
         layout.addWidget(g_hold)
+        g_hold.setHidden(True)
 
         # Gain map
         g_gain = QGroupBox("Gain Map (align B -> A)")
         fg = QFormLayout(g_gain)
 
         self.chk_gain = QCheckBox("Enable gain map")
-        self.chk_gain.setChecked(True)
+        self.chk_gain.setChecked(False)
 
         self.tbl_base_a = QTableWidget(6, 2)
         self.tbl_base_a.setHorizontalHeaderLabels(["CH", "STD_BASELINE_A"])
@@ -2365,6 +2371,7 @@ class MainWindow(QMainWindow):
         fg.addRow("GAIN_CLAMP_MAX:", self.dsb_gmax)
 
         layout.addWidget(g_gain)
+        g_gain.setHidden(True)
         layout.addStretch(1)
 
         self.btn_browse_model.clicked.connect(self.on_browse_model)
@@ -3624,7 +3631,9 @@ class MainWindow(QMainWindow):
         self._set_busy("train")
 
         self.thread_train = QThread()
-        selected_backbone = self.combo_model_backbone.currentText().strip().lower() if hasattr(self, "combo_model_backbone") else "cnn"
+        # The Training page exposes CNN as a fixed model, so the execution
+        # path must not depend on a stale or programmatically changed widget.
+        selected_backbone = "cnn"
         self.append_log(_tag_line("TRAIN", f"[UI] Backbone: {selected_backbone}"))
         self.worker_train = TrainWorker(cfg, self.stop_event_train, backbone=selected_backbone)
         self.worker_train.moveToThread(self.thread_train)
