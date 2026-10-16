@@ -40,7 +40,7 @@ class DetectionConfig:
     post_tier_data: dict  # 各 Gesture Tier 的門檻、Stable Frames 與 Class ID 清單。
     post_exit_thresh: float  # Active Label 低於此機率時回到 inactive 狀態。
     post_slope_factor: float  # Metadata 缺少 slope_factor 時使用的推論倍率 fallback。
-    infer_stride: int  # UART 每累積幾筆有效 Raw Data 呼叫一次 predict；CSV Replay 會略過。
+    infer_stride: int  # UART／CSV 每累積幾筆有效 Raw Data 呼叫一次 predict。
     print_proba: bool  # 是否將各 Class 的預測機率寫入 log_fn。
 
     use_manual_holdavg: bool  # 缺少即時 Hold 值時，是否允許使用 manual_holdavg。
@@ -53,6 +53,8 @@ class DetectionConfig:
     gain_clamp_max: float  # Gain 上限，避免雜訊被過度放大。
 
     dynamic_json_path: str = "dynamic_gestures.json"  # Dynamic Gesture sequence 設定檔。
+    use_manual_baseline: bool = False  # MCU 尚未送出 Baseline 時，是否先使用手動值。
+    manual_baseline: Dict[int, int] = field(default_factory=dict)  # Channel ID → 手動 Baseline。
     ######################################################
     ########X#########For CNN Use#########################
 
@@ -411,6 +413,45 @@ def _detection_load_dynamic_gestures(path_text: str) -> List[dict]:
     return [{"name": "NICE", "sequence": "ok,peace", "max_gap": 2, "time_window": 2.0}]
 
 
+def _detection_format_exception(exc: Exception) -> str:
+    """保留例外類型，避免 UI 只顯示無法判讀的數字訊息。"""
+
+    return f"{type(exc).__name__}: {exc!r}"
+
+
+def _detection_initial_base_map(
+    config: DetectionConfig,
+    fallback: Optional[Dict[int, int]] = None,
+) -> Dict[int, int]:
+    """建立本次 Detect 的初始 Baseline。
+
+    手動 Baseline 是目前裝置的暫時輸入，不與 Gain Map 的
+    STD_BASELINE_A（標準裝置參考值）共用設定。
+    """
+
+    source = config.manual_baseline if config.use_manual_baseline else (fallback or {})
+    return {int(channel): int(value) for channel, value in source.items()}
+
+
+def _detection_apply_uart_baseline(
+    config: DetectionConfig,
+    runtime_state: DetectionRuntimeState,
+    channel_count: int,
+    values: List[int],
+) -> bool:
+    """依 Enable 選項決定 Baseline 來源。
+
+    啟用手動 Baseline 時固定使用 Config 值，不讓 UART 資料覆寫；
+    未啟用時才將 SILBASEEXT／SILMOVBASE 寫入 Runtime State。
+    """
+
+    if config.use_manual_baseline:
+        return False
+    for index in range(min(int(channel_count), len(values))):
+        runtime_state.current_base_map[index + 1] = values[index]
+    return True
+
+
 def _detection_resolve_model_path(config: DetectionConfig, log_fn: Callable[[str], None]) -> str:
     """依 metadata 修正 CNN 副檔名，但不改動 config 或 module globals。"""
 
@@ -539,7 +580,8 @@ def detection_run_serial_from_config(
 
         detector = _detection_create_detector(config, model_path)
         runtime_state = DetectionRuntimeState(
-            gain_map={int(channel): 1.0 for channel in detector.channels}
+            gain_map={int(channel): 1.0 for channel in detector.channels},
+            current_base_map=_detection_initial_base_map(config),
         )
         session = _DetectionSession(
             config,
@@ -551,7 +593,12 @@ def detection_run_serial_from_config(
         serial_handle = serial.Serial(config.serial_port, int(config.baud), timeout=0.1)
         serial_handle.reset_input_buffer()
         effective_log("Serial opened & Buffer reset.")
-        effective_log("[INIT] Waiting for dynamic baseline from SILBASEEXT/SILMOVBASE.")
+        if runtime_state.current_base_map:
+            effective_log(
+                "[INIT] Manual baseline enabled; SILBASEEXT/SILMOVBASE updates are ignored."
+            )
+        else:
+            effective_log("[INIT] Waiting for dynamic baseline from SILBASEEXT/SILMOVBASE.")
 
         channel_error_logged = False
         while stop_event is None or not stop_event.is_set():
@@ -570,8 +617,12 @@ def detection_run_serial_from_config(
                     continue
                 message, count, channel_count, values = parsed
                 if message.startswith(("SILMOVBASE", "SILBASEEXT")):
-                    for index in range(min(int(channel_count), len(values))):
-                        runtime_state.current_base_map[index + 1] = values[index]
+                    _detection_apply_uart_baseline(
+                        config,
+                        runtime_state,
+                        channel_count,
+                        values,
+                    )
                 elif message.startswith(("SILHOLD", "SILHOLDAVG")):
                     for index in range(min(int(channel_count), len(values))):
                         runtime_state.current_hold_map[index + 1] = values[index]
@@ -620,8 +671,9 @@ def detection_run_serial_from_config(
             payload={"stopped": True},
         )
     except Exception as exc:
-        effective_log(f"[DETECT_ERR] {exc}")
-        return contracts.DetectionResult(status="failed", source="serial", message=str(exc))
+        message = _detection_format_exception(exc)
+        effective_log(f"[DETECT_ERR] {message}")
+        return contracts.DetectionResult(status="failed", source="serial", message=message)
     finally:
         # Serial ownership belongs to this operation, including exception paths.
         if serial_handle is not None:
@@ -651,9 +703,10 @@ def detection_run_csv_from_config(
     stop_event=None,
     prediction_fn: Optional[Callable[[contracts.ModelPrediction], None]] = None,
 ) -> contracts.DetectionResult:
-    """Replay CSV data and emit the same raw model contract used by UART.
+    """Replay CSV data with the same stride and raw model contract used by UART.
 
     Rows that do not produce a model prediction do not invoke ``prediction_fn``.
+    Every valid row still enters the rolling Model Buffer before stride gating.
     """
 
     effective_log = log_fn or print
@@ -667,9 +720,8 @@ def detection_run_csv_from_config(
         detector = _detection_create_detector(config, model_path)
         runtime_state = DetectionRuntimeState(
             gain_map={int(channel): 1.0 for channel in detector.channels},
-            current_base_map={
-                int(key): int(value) for key, value in config.std_baseline_a.items()
-            },
+            # CSV 保留舊的 STD fallback；只有明確啟用手動值才優先使用。
+            current_base_map=_detection_initial_base_map(config, config.std_baseline_a),
             current_hold_map={
                 int(key): int(value) for key, value in config.std_holdavg_a.items()
             },
@@ -727,7 +779,7 @@ def detection_run_csv_from_config(
                     runtime_state.current_base_map,
                     runtime_state.current_hold_map,
                     time.time(),
-                    apply_config_stride=False,
+                    apply_config_stride=True,
                 )
                 if not update:
                     continue
@@ -768,5 +820,6 @@ def detection_run_csv_from_config(
             )
         return contracts.DetectionResult(status="completed", source="csv", payload=payload)
     except Exception as exc:
-        effective_log(f"[DETECT_ERR] {exc}")
-        return contracts.DetectionResult(status="failed", source="csv", message=str(exc))
+        message = _detection_format_exception(exc)
+        effective_log(f"[DETECT_ERR] {message}")
+        return contracts.DetectionResult(status="failed", source="csv", message=message)

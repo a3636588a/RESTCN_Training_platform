@@ -6,6 +6,8 @@ class TrainingCancelledError(RuntimeError):
     """Raised when a requested cancellation must stop artifact publication."""
 
 
+
+##Stand Output##
 @dataclass(frozen=True)
 class TrainingProgress:
     """Structured per-epoch metrics for non-UI training consumers."""
@@ -22,6 +24,7 @@ class TrainingProgress:
         return asdict(self)
 
 
+### stand Output ###
 @dataclass(frozen=True)
 class TrainingResult:
     """Stable result shared by every training backbone.

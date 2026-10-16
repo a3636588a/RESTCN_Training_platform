@@ -9,13 +9,24 @@ import numpy as np
 from xgboost import XGBClassifier
 
 from detection_contracts import ModelPrediction
+from xgboost_motion_features import motion_features, sync_features
+from xgboost_motion_features import onset_features, relative_onset_features
 
 
 TIME_SEGMENT_COUNT = 10
 WAVE_SAMPLE_COUNT = 25
 WAVE_LANDMARK_COUNT = 4
 WAVE_DYNAMIC_COUNT = 6
+HYBRID_WAVE_SAMPLE_COUNT = 20
+HYBRID_SHARE_SAMPLE_COUNT = 10
 FEATURES_PER_CHANNEL = {"stats40": 8, "time140": 28, "wave215": 8 + WAVE_SAMPLE_COUNT + WAVE_LANDMARK_COUNT + WAVE_DYNAMIC_COUNT}
+SUPPORTED_FEATURE_SETS = {*FEATURES_PER_CHANNEL, "hybrid225"}
+FEATURES_PER_CHANNEL["motion75"] = 15
+SUPPORTED_FEATURE_SETS.add("motion75")
+SUPPORTED_FEATURE_SETS.add("onset95")
+SUPPORTED_FEATURE_SETS.add("onset60")
+SUPPORTED_FEATURE_SETS.add("onset60_v2")
+SUPPORTED_FEATURE_SETS.add("sync47")
 
 
 class XGBoostRealtimeGestureDetector:
@@ -40,14 +51,31 @@ class XGBoostRealtimeGestureDetector:
         # 舊模型未記錄此欄位，保留過去可使用負差值的推論結果。
         self.negative_delta_mode = str(self.meta.get("negative_delta_mode", "allow")).lower()
         self.feature_set = str(self.meta.get("feature_set", "stats40")).lower()
+        if self.feature_set in {"motion75", "onset95"} and self.window_len < 12:
+            raise ValueError(f"{self.feature_set} requires window_len >= 12")
+        if self.feature_set in {"onset60", "onset60_v2"} and self.window_len < 8:
+            raise ValueError("onset60 requires window_len >= 8")
+        if self.feature_set in {"onset95", "onset60", "onset60_v2"} and self.signal_mode != "dn":
+            raise ValueError(f"{self.feature_set} requires signal_mode=dn")
+        self.history_len = self.window_len
+        if self.feature_set == "sync47":
+            if self.channels != [1,2,3,4,5] or self.signal_mode != "dn" or self.window_len < 3:
+                raise ValueError("sync47 requires CH1..5, dn, window_len >=3")
+            self.history_len = 3*self.window_len
+            if int(self.meta.get("history_len", 0)) != self.history_len:
+                raise ValueError("sync47 metadata history_len must equal 3 * window_len")
         self.feature_cols: List[str] = list(self.meta["feature_names"])
         labels = self.meta["labels"]
         self.id_to_name = {index: str(label) for index, label in enumerate(labels)}
         self.model_type = "xgboost"
 
-        if self.feature_set not in FEATURES_PER_CHANNEL:
+        if self.feature_set not in SUPPORTED_FEATURE_SETS:
             raise ValueError(f"Unsupported XGBoost feature set: {self.feature_set}")
-        if len(self.feature_cols) != len(self.channels) * FEATURES_PER_CHANNEL[self.feature_set]:
+        expected_feature_count = int(self.meta.get(
+            "feature_count",
+            len(self.channels) * FEATURES_PER_CHANNEL.get(self.feature_set, 0),
+        ))
+        if len(self.feature_cols) != expected_feature_count:
             raise ValueError("XGBoost metadata feature count does not match the configured feature set")
         if self.signal_mode not in {"d", "dn"}:
             raise ValueError(f"Unsupported XGBoost signal mode: {self.signal_mode}")
@@ -56,9 +84,9 @@ class XGBoostRealtimeGestureDetector:
 
         self.clf = XGBClassifier()
         self.clf.load_model(model_path)
-        self.window_row = {channel: deque(maxlen=self.window_len) for channel in self.channels}
-        self.window_base = {channel: deque(maxlen=self.window_len) for channel in self.channels}
-        self.window_hold = {channel: deque(maxlen=self.window_len) for channel in self.channels}
+        self.window_row = {channel: deque(maxlen=self.history_len) for channel in self.channels}
+        self.window_base = {channel: deque(maxlen=self.history_len) for channel in self.channels}
+        self.window_hold = {channel: deque(maxlen=self.history_len) for channel in self.channels}
 
     def clear_buffers(self) -> None:
         for channel in self.channels:
@@ -88,7 +116,7 @@ class XGBoostRealtimeGestureDetector:
             self.window_hold[channel].append(float(hold_vals.get(channel, self.manual_holdavg.get(channel, 0.0))))
 
     def is_buffer_full(self) -> bool:
-        return all(len(self.window_row[channel]) == self.window_len for channel in self.channels)
+        return all(len(self.window_row[channel]) == self.history_len for channel in self.channels)
 
     def predict(self, gain_map: Dict[int, float]) -> Optional[ModelPrediction]:
         del gain_map
@@ -135,7 +163,16 @@ class XGBoostRealtimeGestureDetector:
 
     @classmethod
     def extract_features(cls, window_d: np.ndarray, feature_set: str) -> np.ndarray:
+        if feature_set == "sync47":
+            extra = sync_features(window_d)
+            return np.concatenate([cls.extract_40_features(window_d[-(len(window_d)//3):]), extra])
         static_features = cls.extract_40_features(window_d)
+        if feature_set in {"onset60", "onset60_v2"}:
+            return np.concatenate([static_features, relative_onset_features(window_d, stable_range=.08 if feature_set == "onset60_v2" else .03)])
+        if feature_set == "onset95":
+            return np.concatenate([static_features, motion_features(window_d), onset_features(window_d)])
+        if feature_set == "motion75":
+            return np.concatenate([static_features, motion_features(window_d)])
         if feature_set == "stats40":
             return static_features
         if feature_set == "time140":
@@ -145,6 +182,41 @@ class XGBoostRealtimeGestureDetector:
             segment_means = [np.mean(segment, axis=0) for segment in segments]
             segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
             return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
+        if feature_set == "hybrid225":
+            old_x = np.linspace(0.0, 1.0, num=window_d.shape[0], dtype=np.float32)
+            wave_x = np.linspace(0.0, 1.0, num=HYBRID_WAVE_SAMPLE_COUNT, dtype=np.float32)
+            share_x = np.linspace(0.0, 1.0, num=HYBRID_SHARE_SAMPLE_COUNT, dtype=np.float32)
+            waveform = np.column_stack([
+                np.interp(wave_x, old_x, window_d[:, channel])
+                for channel in range(window_d.shape[1])
+            ])
+            positive_signal = np.maximum(window_d, 0.0)
+            activity = np.sum(positive_signal, axis=1)
+            activity_curve = np.interp(wave_x, old_x, activity)
+            sampled_positive = np.column_stack([
+                np.interp(share_x, old_x, positive_signal[:, channel])
+                for channel in range(window_d.shape[1])
+            ])
+            sampled_share = sampled_positive / np.maximum(np.sum(sampled_positive, axis=1, keepdims=True), 1e-6)
+            total_per_channel = np.sum(positive_signal, axis=0)
+            total_share = total_per_channel / max(float(np.sum(total_per_channel)), 1e-6)
+            channel_peak_position = np.argmax(positive_signal, axis=0) / max(window_d.shape[0] - 1, 1)
+            active_rows = activity > 1e-6
+            dominant_channels = np.argmax(positive_signal[active_rows], axis=1) if np.any(active_rows) else np.empty(0, dtype=int)
+            dominant_switches = float(np.sum(np.diff(dominant_channels) != 0)) if len(dominant_channels) > 1 else 0.0
+            instantaneous_share = positive_signal / np.maximum(activity[:, None], 1e-6)
+            entropy = -np.sum(instantaneous_share * np.log(np.maximum(instantaneous_share, 1e-6)), axis=1)
+            global_features = np.array([
+                np.sum(activity),
+                np.argmax(activity) / max(window_d.shape[0] - 1, 1),
+                np.sum(np.abs(np.diff(activity))),
+                dominant_switches,
+                np.mean(entropy[active_rows]) if np.any(active_rows) else 0.0,
+            ], dtype=np.float32)
+            return np.concatenate([
+                static_features, waveform.reshape(-1), activity_curve, sampled_share.reshape(-1),
+                total_share, channel_peak_position, global_features,
+            ]).astype(np.float32)
         if feature_set != "wave215":
             raise ValueError(f"Unsupported XGBoost feature set: {feature_set}")
         old_x = np.linspace(0.0, 1.0, num=window_d.shape[0], dtype=np.float32)

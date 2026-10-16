@@ -1454,7 +1454,7 @@ class MainWindow(QMainWindow):
         self.f_features.addRow("", w_ch)
 
         self.spin_window_len = NoWheelSpinBox()
-        self.spin_window_len.setRange(5, 200)
+        self.spin_window_len.setRange(5, 2000)
         self.spin_window_len.setValue(35)
         self.f_features.addRow("window_len (窗口長度):", self.spin_window_len)
 
@@ -1626,6 +1626,68 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.g_model)
 
+        # XGBoost 使用獨立的樹模型超參數；初始值由共用 API 提供，避免 UI
+        # 與非 UI caller 各自維護不同 Default Value。
+        xgboost_defaults = training_api.TrainingConfig.xgboost_defaults()
+        self.g_xgboost_model = QGroupBox("XGBoost Model")
+        self.f_xgboost_model = QFormLayout(self.g_xgboost_model)
+        self.combo_xgboost_features = QComboBox()
+        self.combo_xgboost_features.addItems(["stats40", "time140", "wave215", "hybrid225", "motion75", "onset95", "onset60", "onset60_v2", "sync47", "fatigue12"])
+        self.combo_xgboost_features.setCurrentText(xgboost_defaults.xgboost_feature_set)
+        self.f_xgboost_model.addRow("Feature set:", self.combo_xgboost_features)
+        self.spin_fatigue_rate = NoWheelDoubleSpinBox()
+        self.spin_fatigue_rate.setRange(6.01, 10000)
+        self.spin_fatigue_rate.setValue(100)
+        self.f_xgboost_model.addRow("取樣率 (Hz):", self.spin_fatigue_rate)
+        self.lbl_fatigue_hint = QLabel("CH1 raw；依標籤表 prefix 判定，例如 early-01.csv 對應 early。")
+        self.lbl_fatigue_hint.setWordWrap(True)
+        self.f_xgboost_model.addRow(self.lbl_fatigue_hint)
+        for widget in (self.spin_fatigue_rate, self.lbl_fatigue_hint):
+            self.f_xgboost_model.setRowVisible(widget, False)
+
+        self.spin_xgboost_n_estimators = NoWheelSpinBox()
+        self.spin_xgboost_n_estimators.setRange(1, 100000)
+        self.spin_xgboost_n_estimators.setValue(xgboost_defaults.xgboost_n_estimators)
+        self.f_xgboost_model.addRow("n_estimators:", self.spin_xgboost_n_estimators)
+
+        self.spin_xgboost_max_depth = NoWheelSpinBox()
+        self.spin_xgboost_max_depth.setRange(1, 100)
+        self.spin_xgboost_max_depth.setValue(xgboost_defaults.xgboost_max_depth)
+        self.f_xgboost_model.addRow("max_depth:", self.spin_xgboost_max_depth)
+
+        self.dsb_xgboost_learning_rate = NoWheelDoubleSpinBox()
+        self.dsb_xgboost_learning_rate.setDecimals(4)
+        self.dsb_xgboost_learning_rate.setRange(0.0001, 1.0)
+        self.dsb_xgboost_learning_rate.setValue(xgboost_defaults.xgboost_learning_rate)
+        self.f_xgboost_model.addRow("learning_rate:", self.dsb_xgboost_learning_rate)
+
+        self.dsb_xgboost_subsample = NoWheelDoubleSpinBox()
+        self.dsb_xgboost_subsample.setDecimals(2)
+        self.dsb_xgboost_subsample.setRange(0.01, 1.0)
+        self.dsb_xgboost_subsample.setValue(xgboost_defaults.xgboost_subsample)
+        self.f_xgboost_model.addRow("subsample:", self.dsb_xgboost_subsample)
+
+        self.dsb_xgboost_colsample_bytree = NoWheelDoubleSpinBox()
+        self.dsb_xgboost_colsample_bytree.setDecimals(2)
+        self.dsb_xgboost_colsample_bytree.setRange(0.01, 1.0)
+        self.dsb_xgboost_colsample_bytree.setValue(xgboost_defaults.xgboost_colsample_bytree)
+        self.f_xgboost_model.addRow("colsample_bytree:", self.dsb_xgboost_colsample_bytree)
+
+        self.dsb_xgboost_min_child_weight = NoWheelDoubleSpinBox()
+        self.dsb_xgboost_min_child_weight.setDecimals(2)
+        self.dsb_xgboost_min_child_weight.setRange(0.0, 1000000.0)
+        self.dsb_xgboost_min_child_weight.setValue(xgboost_defaults.xgboost_min_child_weight)
+        self.f_xgboost_model.addRow("min_child_weight:", self.dsb_xgboost_min_child_weight)
+
+        self.dsb_xgboost_reg_lambda = NoWheelDoubleSpinBox()
+        self.dsb_xgboost_reg_lambda.setDecimals(2)
+        self.dsb_xgboost_reg_lambda.setRange(0.0, 1000000.0)
+        self.dsb_xgboost_reg_lambda.setValue(xgboost_defaults.xgboost_reg_lambda)
+        self.f_xgboost_model.addRow("reg_lambda:", self.dsb_xgboost_reg_lambda)
+
+        layout.addWidget(self.g_xgboost_model)
+        self.g_xgboost_model.setVisible(False)
+
         # Output
         self.g_out = QGroupBox("Output")
         self.f_out = QFormLayout(self.g_out)
@@ -1678,6 +1740,8 @@ class MainWindow(QMainWindow):
         self.btn_train.clicked.connect(self.on_train)
         self.btn_stop_train.clicked.connect(self.on_stop_train)
         self.btn_view_report.clicked.connect(self.on_view_report)
+        self.combo_model_backbone.currentTextChanged.connect(self._update_training_backbone_view)
+        self.combo_xgboost_features.currentTextChanged.connect(self._update_fatigue_feature_view)
 
         # Dynamic gestures connections
         self.btn_dynamic_add.clicked.connect(self._add_dynamic_row)
@@ -1690,6 +1754,56 @@ class MainWindow(QMainWindow):
             self._add_label_row(prefix="0", name="0", _id=0)
             self._add_label_row(prefix="reject", name="MISS", _id=0)
             self._add_label_row(prefix="1", name="1", _id=1)
+
+    def _update_training_backbone_view(self, backbone: str) -> None:
+        """只在 XGBoost 被選取時顯示其專用 API 參數。"""
+
+        self.g_xgboost_model.setVisible(backbone.strip().lower() == "xgboost")
+        self._update_fatigue_feature_view()
+
+    def _update_fatigue_feature_view(self, *_):
+        active = (self.combo_model_backbone.currentText() == "xgboost"
+                  and self.combo_xgboost_features.currentText() == "fatigue12")
+        for widget in (self.spin_fatigue_rate, self.lbl_fatigue_hint):
+            self.f_xgboost_model.setRowVisible(widget, active)
+        previous = getattr(self, "_fatigue_ui_active", False)
+        if active == previous:
+            return
+        preset = training_api.TrainingConfig.xgboost_fatigue_defaults()
+        controls = {
+            "spin_window_len": preset.window_len, "spin_window_step": preset.window_step,
+            "dsb_test_size": preset.test_size,
+            "spin_xgboost_n_estimators": preset.xgboost_n_estimators,
+            "spin_xgboost_max_depth": preset.xgboost_max_depth,
+            "dsb_xgboost_learning_rate": preset.xgboost_learning_rate,
+            "dsb_xgboost_subsample": preset.xgboost_subsample,
+            "dsb_xgboost_colsample_bytree": preset.xgboost_colsample_bytree,
+            "dsb_xgboost_min_child_weight": preset.xgboost_min_child_weight,
+            "dsb_xgboost_reg_lambda": preset.xgboost_reg_lambda,
+        }
+        self._fatigue_ui_active = active
+        if active:
+            self._fatigue_ui_saved = dict(values={name: getattr(self, name).value() for name in controls},
+                channels=[cb.isChecked() for cb in self.chk_ch], aug=self.chk_enable_aug.isChecked(),
+                model=self.edit_output_model_path.text(), meta=self.edit_output_metadata_path.text())
+            for name, value in controls.items():
+                getattr(self, name).setValue(value)
+            for i, cb in enumerate(self.chk_ch):
+                cb.setChecked(i == 0)
+            self.chk_enable_aug.setChecked(False)
+            self.edit_output_model_path.setText("fatigue_model.json")
+            self.edit_output_metadata_path.setText("fatigue_meta.json")
+        else:
+            saved = self._fatigue_ui_saved
+            for name, value in saved["values"].items():
+                getattr(self, name).setValue(value)
+            for cb, checked in zip(self.chk_ch, saved["channels"]):
+                cb.setChecked(checked)
+            self.chk_enable_aug.setChecked(saved["aug"])
+            self.edit_output_model_path.setText(saved["model"])
+            self.edit_output_metadata_path.setText(saved["meta"])
+        for widget in [*self.chk_ch, self.chk_enable_aug]:
+            widget.setEnabled(not active)
 
     def _build_detect_tab(self):
         # === 原本 ui_v4.py 的 Detect UI 全部 그대로 ===
@@ -1881,6 +1995,28 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(g_detect_post)
 
+        # Enable 決定 Baseline 來源：啟用時用手動值，否則讀取 MCU UART。
+        g_base = QGroupBox("Manual BASELINE (otherwise read from UART)")
+        vb = QVBoxLayout(g_base)
+
+        self.chk_use_manual_baseline = QCheckBox("Enable manual baseline")
+        self.chk_use_manual_baseline.setChecked(False)
+        vb.addWidget(self.chk_use_manual_baseline)
+
+        self.tbl_manual_baseline = QTableWidget(6, 2)
+        self.tbl_manual_baseline.setHorizontalHeaderLabels(["CH", "baseline"])
+        self.tbl_manual_baseline.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_manual_baseline.setMinimumHeight(215)
+        vb.addWidget(self.tbl_manual_baseline)
+
+        for i in range(6):
+            channel = i + 1
+            self.tbl_manual_baseline.setItem(i, 0, QTableWidgetItem(str(channel)))
+            # 手動值不預先套用標準裝置資料，由使用者填入或從 CSV 匯入。
+            self.tbl_manual_baseline.setItem(i, 1, QTableWidgetItem("0"))
+
+        layout.addWidget(g_base)
+
         # Manual holdavg
         g_hold = QGroupBox("Manual HOLDAVG (used if SILHOLD missing)")
         vh = QVBoxLayout(g_hold)
@@ -1897,9 +2033,8 @@ class MainWindow(QMainWindow):
 
         for i in range(6):
             self.tbl_hold.setItem(i, 0, QTableWidgetItem(str(i + 1)))
-            v = _DEFAULT_DETECTION_MANUAL_HOLDAVG.get(i + 1, 0)
-            if v == 0 and i == 5: v = 17966 # default for CH6
-            self.tbl_hold.setItem(i, 1, QTableWidgetItem(str(v)))
+            # 手動值預設為 0，避免誤用其他裝置的 Hold Average。
+            self.tbl_hold.setItem(i, 1, QTableWidgetItem("0"))
 
         layout.addWidget(g_hold)
 
@@ -3038,6 +3173,16 @@ class MainWindow(QMainWindow):
             early_stop_patience=int(self.spin_early_stop_patience.value()),
             lr_patience=int(self.spin_lr_patience.value()),
 
+            # XGBoost Params
+            xgboost_feature_set=self.combo_xgboost_features.currentText(),
+            xgboost_n_estimators=int(self.spin_xgboost_n_estimators.value()),
+            xgboost_max_depth=int(self.spin_xgboost_max_depth.value()),
+            xgboost_learning_rate=float(self.dsb_xgboost_learning_rate.value()),
+            xgboost_subsample=float(self.dsb_xgboost_subsample.value()),
+            xgboost_colsample_bytree=float(self.dsb_xgboost_colsample_bytree.value()),
+            xgboost_min_child_weight=float(self.dsb_xgboost_min_child_weight.value()),
+            xgboost_reg_lambda=float(self.dsb_xgboost_reg_lambda.value()),
+
             # Augmentation
             enable_augmentation=bool(self.chk_enable_aug.isChecked()),
             aug_copies=int(self.spin_aug_copies.value()),
@@ -3054,6 +3199,11 @@ class MainWindow(QMainWindow):
             time_warp_min=float(self.dsb_tw_min.value()),
             time_warp_max=float(self.dsb_tw_max.value())
         )
+        if getattr(self, "_fatigue_ui_active", False):
+            cfg.xgboost_signal_mode = "raw"
+            cfg.xgboost_negative_delta_mode = "allow"
+            cfg.fatigue_class_mode = "label_table"
+            cfg.fatigue_sample_rate_hz = self.spin_fatigue_rate.value()
         return cfg
 
     def _scan_cnn_dataset(self, cfg: training_api.TrainingConfig) -> dict:
@@ -3072,7 +3222,9 @@ class MainWindow(QMainWindow):
         if not data_dir.exists():
             return {"total_found": 0, "total_valid": 0}
             
-        for f in data_dir.glob("*.csv"):
+        fatigue = cfg.xgboost_feature_set == "fatigue12" and cfg.xgboost_signal_mode == "raw"
+        paths = data_dir.rglob("*.csv") if fatigue else data_dir.glob("*.csv")
+        for f in paths:
             total += 1
             p = f.name.split("-")[0].lower().strip()
             if p in prefixes:
@@ -3383,25 +3535,57 @@ class MainWindow(QMainWindow):
         try:
             with open(path, mode='r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
-                row = next(reader) # Get first data row
-                
-                # 1. Manual HOLDAVG (tbl_hold) -> HOLDAVG1-6
-                # 2. Gain Map STD_HOLDAVG_A (tbl_hold_a) -> HOLDAVG1-6
-                for i in range(6):
-                    key = f"HOLDAVG{i+1}"
-                    if key in row:
-                        val_str = str(int(float(row[key])))
-                        self.tbl_hold.setItem(i, 1, QTableWidgetItem(val_str))
-                        self.tbl_hold_a.setItem(i, 1, QTableWidgetItem(val_str))
-                
-                # 3. Gain Map STD_BASELINE_A (tbl_base_a) -> MOVBASE1-6
-                for i in range(6):
-                    key = f"MOVBASE{i+1}"
-                    if key in row:
-                        val_str = str(int(float(row[key])))
-                        self.tbl_base_a.setItem(i, 1, QTableWidgetItem(val_str))
-                        
-            self.append_log(_tag_line("DETECT", f"Imported Detect parameters from: {path}"))
+                # Log 前幾列可能尚未收到校正值；掃描到各 Channel
+                # 第一個非零值再更新 UI。欄位名同時容忍 BOM、空白與大小寫。
+                imported_base = {}
+                imported_hold = {}
+                for raw_row in reader:
+                    row = {
+                        str(key or "").lstrip("\ufeff").strip().upper(): value
+                        for key, value in raw_row.items()
+                    }
+                    for channel in range(1, 7):
+                        for prefix, target in (
+                            ("MOVBASE", imported_base),
+                            ("HOLDAVG", imported_hold),
+                        ):
+                            key = f"{prefix}{channel}"
+                            raw_value = str(row.get(key, "") or "").strip()
+                            if channel in target or not raw_value:
+                                continue
+                            try:
+                                value = int(float(raw_value))
+                            except ValueError:
+                                continue
+                            if value != 0:
+                                target[channel] = value
+
+                    if len(imported_base) == 6 and len(imported_hold) == 6:
+                        break
+
+            if not imported_base and not imported_hold:
+                QMessageBox.warning(
+                    self,
+                    "Import CSV",
+                    "CSV 中找不到有效的 MOVBASE1~6 或 HOLDAVG1~6 數值。",
+                )
+                return
+
+            for channel, value in imported_hold.items():
+                val_str = str(value)
+                self.tbl_hold.setItem(channel - 1, 1, QTableWidgetItem(val_str))
+                self.tbl_hold_a.setItem(channel - 1, 1, QTableWidgetItem(val_str))
+
+            # Manual BASELINE 與 Gain 參考值保持獨立，但可由同一份 Log 帶入初始值。
+            for channel, value in imported_base.items():
+                val_str = str(value)
+                self.tbl_manual_baseline.setItem(channel - 1, 1, QTableWidgetItem(val_str))
+                self.tbl_base_a.setItem(channel - 1, 1, QTableWidgetItem(val_str))
+
+            self.append_log(_tag_line(
+                "DETECT",
+                f"Imported Base={imported_base}, Hold={imported_hold} from: {path}",
+            ))
             
         except StopIteration:
             QMessageBox.warning(self, "Import CSV", "The CSV file is empty!")
@@ -4416,6 +4600,8 @@ class MainWindow(QMainWindow):
             infer_stride=self.sb_detect_stride.value(),
             post_tier_data=self._extract_tier_data_from_ui(self.tbl_detect_tier_base, self.tbl_detect_gestures),
             print_proba=bool(self.chk_print_proba.isChecked()),
+            use_manual_baseline=bool(self.chk_use_manual_baseline.isChecked()),
+            manual_baseline=self._read_ch_table_int_map(self.tbl_manual_baseline),
             use_manual_holdavg=bool(self.chk_use_manual.isChecked()),
             manual_holdavg=self._read_ch_table_int_map(self.tbl_hold),
             enable_gain_map=bool(self.chk_gain.isChecked()),

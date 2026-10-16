@@ -239,10 +239,26 @@
 - `RealtimeGestureDetector` 必須由 Detection API 明確傳入 Model、Metadata、Slope 與 Manual Hold，不再暗中使用 module defaults。
 - UART lifecycle、固定設定與單次執行狀態分別由 `detection_api.py`、`DetectionConfig` 與 `DetectionRuntimeState` 負責。
 - UI 初始值留在 UI 層，只用來建立 `DetectionConfig`，不再由 Model module 提供。
-
 ## 第十階段：TinyOL 核心與 UI 分離
 
 - 新增 `tinyol_api.py`，集中 PC TinyOL 的 UART 錄製、Window CSV 建立、Dataset 前處理、Head Training 與 Base/Candidate Validation。
 - `TinyOlRecordConfig`、`TinyOlTrainConfig` 改由 TinyOL API 擁有，避免設定型別依賴 Qt UI。
 - 提供 `tinyol_record_from_config()`、`tinyol_train_from_config()` 與純設定驗證入口，可由 CLI、測試或其他應用直接使用。
 - `gesture_tool_ui.py` 的 TinyOL Worker 縮減為 Qt Signal adapter；UI 操作方式與既有輸出檔名維持不變。
+
+## XGBoost Training UI API 接線
+
+- Training UI 選擇 `xgboost` 時顯示 7 個 XGBoost 專用超參數。
+- XGBoost 欄位初始值取自 `TrainingConfig.xgboost_defaults()`，避免 UI 與 API Default Value 漂移。
+- `_build_training_config()` 將畫面值送入共用 API，而不是只呈現在 UI。
+- CNN／DS-TCN 既有欄位目前保持顯示；本階段不加入一般參數隱藏或鎖定規則。
+
+## Detection 手動 Baseline
+
+- `DetectionConfig` 新增 `use_manual_baseline` 與 `manual_baseline`，未啟用時保持原有行為。
+- 手動 Baseline 代表「目前裝置」的初始值，與 Gain Map 使用的「標準裝置」`STD_BASELINE_A` 分開。
+- UART Detect 啟用手動 Baseline 時固定使用 Config 值，並忽略 `SILBASEEXT`／`SILMOVBASE`；未啟用時才由 UART 更新 Runtime State。
+- CSV Replay 啟用手動 Baseline 時優先使用手動值；未啟用時繼續使用原有 `STD_BASELINE_A` fallback。
+- UI 新增獨立 Manual BASELINE 區塊，CSV Log Import 可同時帶入手動 Baseline 與 Gain reference 起始值。
+- Manual BASELINE 與 Manual HOLDAVG 的 UI 初始值統一為 `0`，只在使用者手動編輯或匯入 CSV 後改變。
+- Detect CSV Import 不再只讀第一列；會掃描各 Channel 第一個有效非零 `MOVBASE`／`HOLDAVG` 值，並在 Terminal 顯示實際匯入結果。

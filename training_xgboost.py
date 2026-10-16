@@ -13,6 +13,9 @@ from xgboost import XGBClassifier
 from xgboost.callback import TrainingCallback
 
 from training_api import TrainingConfig
+from xgboost_motion_features import MOTION_TYPES, motion_features
+from xgboost_motion_features import onset_names, onset_features
+from xgboost_motion_features import relative_onset_features, sync_features, SYNC_NAMES
 from training_contracts import TrainingProgress, training_raise_if_cancelled
 
 STAT_FEATURE_TYPES = ("mean", "std", "peak_to_peak", "mean_abs_diff", "segment_1_mean", "segment_2_mean", "segment_3_mean", "segment_3_minus_1")
@@ -20,10 +23,21 @@ TIME_SEGMENT_COUNT = 10
 WAVE_SAMPLE_COUNT = 25
 WAVE_LANDMARK_TYPES = ("max_position", "min_position", "max_rise_position", "max_fall_position")
 WAVE_DYNAMIC_TYPES = ("total_variation", "positive_slope_ratio", "negative_slope_ratio", "fft_low_energy", "fft_mid_energy", "fft_high_energy")
+HYBRID_WAVE_SAMPLE_COUNT = 20
+HYBRID_SHARE_SAMPLE_COUNT = 10
+HYBRID_GLOBAL_TYPES = ("activity_total", "activity_peak_position", "activity_total_variation", "dominant_channel_switches", "mean_channel_entropy")
 XGBOOST_FEATURE_SETS = {
+    "fatigue12": 12,
+    "motion75": 15,
+    "onset95": None,
+    "onset60": None,
+    "onset60_v2": None,
+    "sync47": None,
     "stats40": len(STAT_FEATURE_TYPES),
     "time140": len(STAT_FEATURE_TYPES) + TIME_SEGMENT_COUNT * 2,
     "wave215": len(STAT_FEATURE_TYPES) + WAVE_SAMPLE_COUNT + len(WAVE_LANDMARK_TYPES) + len(WAVE_DYNAMIC_TYPES),
+    # Hybrid225 同時保留靜態統計、每通道波形，以及全通道的相對活動狀態。
+    "hybrid225": None,
 }
 XGBOOST_SIGNAL_MODES = {"d", "dn"}
 XGBOOST_NEGATIVE_DELTA_MODES = {"allow", "clip_zero"}
@@ -71,7 +85,21 @@ class XGBoostTrainingLogCallback(TrainingCallback):
 
 
 def make_feature_names(channels: Iterable[int], feature_set: str) -> List[str]:
+    channels = list(channels)
+    if feature_set == "fatigue12":
+        if channels != [1]:
+            raise ValueError("fatigue12 requires channels=[1]")
+        from fatigue_xgboost import FEATURE_NAMES
+        return list(FEATURE_NAMES)
     names = [f"{feature_type}_ch{channel}" for feature_type in STAT_FEATURE_TYPES for channel in channels]
+    if feature_set == "sync47":
+        names.extend(SYNC_NAMES)
+    if feature_set in {"motion75", "onset95"}:
+        names.extend(f"{kind}_ch{channel}" for kind in MOTION_TYPES for channel in channels)
+    if feature_set == "onset95":
+        names.extend(onset_names(channels))
+    if feature_set in {"onset60", "onset60_v2"}:
+        names.extend('relative_' + name for name in onset_names(channels))
     if feature_set == "time140":
         names.extend(
             f"time_segment_{index:02d}_mean_ch{channel}"
@@ -99,6 +127,21 @@ def make_feature_names(channels: Iterable[int], feature_set: str) -> List[str]:
             for feature_type in WAVE_DYNAMIC_TYPES
             for channel in channels
         )
+    if feature_set == "hybrid225":
+        names.extend(
+            f"hybrid_wave_sample_{index:02d}_ch{channel}"
+            for index in range(1, HYBRID_WAVE_SAMPLE_COUNT + 1)
+            for channel in channels
+        )
+        names.extend(f"global_activity_sample_{index:02d}" for index in range(1, HYBRID_WAVE_SAMPLE_COUNT + 1))
+        names.extend(
+            f"channel_share_sample_{index:02d}_ch{channel}"
+            for index in range(1, HYBRID_SHARE_SAMPLE_COUNT + 1)
+            for channel in channels
+        )
+        names.extend(f"channel_total_share_ch{channel}" for channel in channels)
+        names.extend(f"channel_peak_position_ch{channel}" for channel in channels)
+        names.extend(HYBRID_GLOBAL_TYPES)
     return names
 
 
@@ -122,7 +165,18 @@ def extract_features(window_d: np.ndarray, feature_set: str) -> np.ndarray:
     """依 feature_set 建立統計特徵、分段摘要或保留波形形狀的特徵。"""
     if feature_set not in XGBOOST_FEATURE_SETS:
         raise ValueError(f"Unsupported XGBoost feature set: {feature_set}")
+    if feature_set == "fatigue12":
+        raise ValueError("fatigue12 uses fatigue_xgboost.extract_features(raw_ch1, FatigueConfig)")
+    if feature_set == "sync47":
+        extra = sync_features(window_d)
+        return np.concatenate([extract_40_features(window_d[-(len(window_d)//3):]), extra])
     static_features = extract_40_features(window_d)
+    if feature_set in {"onset60", "onset60_v2"}:
+        return np.concatenate([static_features, relative_onset_features(window_d, stable_range=.08 if feature_set == "onset60_v2" else .03)])
+    if feature_set == "onset95":
+        return np.concatenate([static_features, motion_features(window_d), onset_features(window_d)])
+    if feature_set == "motion75":
+        return np.concatenate([static_features, motion_features(window_d)])
     if feature_set == "stats40":
         return static_features
     if feature_set == "time140":
@@ -132,6 +186,42 @@ def extract_features(window_d: np.ndarray, feature_set: str) -> np.ndarray:
         segment_means = [np.mean(segment, axis=0) for segment in segments]
         segment_slopes = [np.mean(np.diff(segment, axis=0), axis=0) for segment in segments]
         return np.concatenate([static_features, *segment_means, *segment_slopes]).astype(np.float32)
+
+    if feature_set == "hybrid225":
+        old_x = np.linspace(0.0, 1.0, num=window_d.shape[0], dtype=np.float32)
+        wave_x = np.linspace(0.0, 1.0, num=HYBRID_WAVE_SAMPLE_COUNT, dtype=np.float32)
+        share_x = np.linspace(0.0, 1.0, num=HYBRID_SHARE_SAMPLE_COUNT, dtype=np.float32)
+        waveform = np.column_stack([
+            np.interp(wave_x, old_x, window_d[:, channel])
+            for channel in range(window_d.shape[1])
+        ])
+        positive_signal = np.maximum(window_d, 0.0)
+        activity = np.sum(positive_signal, axis=1)
+        activity_curve = np.interp(wave_x, old_x, activity)
+        sampled_positive = np.column_stack([
+            np.interp(share_x, old_x, positive_signal[:, channel])
+            for channel in range(window_d.shape[1])
+        ])
+        sampled_share = sampled_positive / np.maximum(np.sum(sampled_positive, axis=1, keepdims=True), 1e-6)
+        total_per_channel = np.sum(positive_signal, axis=0)
+        total_share = total_per_channel / max(float(np.sum(total_per_channel)), 1e-6)
+        channel_peak_position = np.argmax(positive_signal, axis=0) / max(window_d.shape[0] - 1, 1)
+        active_rows = activity > 1e-6
+        dominant_channels = np.argmax(positive_signal[active_rows], axis=1) if np.any(active_rows) else np.empty(0, dtype=int)
+        dominant_switches = float(np.sum(np.diff(dominant_channels) != 0)) if len(dominant_channels) > 1 else 0.0
+        instantaneous_share = positive_signal / np.maximum(activity[:, None], 1e-6)
+        entropy = -np.sum(instantaneous_share * np.log(np.maximum(instantaneous_share, 1e-6)), axis=1)
+        global_features = np.array([
+            np.sum(activity),
+            np.argmax(activity) / max(window_d.shape[0] - 1, 1),
+            np.sum(np.abs(np.diff(activity))),
+            dominant_switches,
+            np.mean(entropy[active_rows]) if np.any(active_rows) else 0.0,
+        ], dtype=np.float32)
+        return np.concatenate([
+            static_features, waveform.reshape(-1), activity_curve, sampled_share.reshape(-1),
+            total_share, channel_peak_position, global_features,
+        ]).astype(np.float32)
 
     # wave215: 以等距內插保留整段形狀，再加入關鍵位置與整體動態特徵。
     old_x = np.linspace(0.0, 1.0, num=window_d.shape[0], dtype=np.float32)
@@ -215,6 +305,9 @@ def load_file_windows(
     time_warp_factor: float = 1.0,
 ) -> np.ndarray:
     """讀取單一 CSV，依設定的視窗長度與步長產生特徵。"""
+    if feature_set == "sync47" and (list(channels) != [1,2,3,4,5] or signal_mode != "dn"):
+        raise ValueError("sync47 requires channels=[1,2,3,4,5] and signal_mode=dn")
+    history_len = window_len * 3 if feature_set == "sync47" else window_len
     df = pd.read_csv(csv_path)
     row = df[[f"ROWCH{channel}" for channel in channels]].to_numpy(np.float32)
     base = df[[f"MOVBASE{channel}" for channel in channels]].to_numpy(np.float32)
@@ -228,7 +321,7 @@ def load_file_windows(
         row, base, hold, signal_mode, delta_gain, span_gain, delta_offset,
         negative_delta_mode,
     )
-    features = [extract_features(signal[start:start + window_len], feature_set) for start in range(0, len(signal) - window_len + 1, window_step)]
+    features = [extract_features(signal[start:start + history_len], feature_set) for start in range(0, len(signal) - history_len + 1, window_step)]
     return np.asarray(features, dtype=np.float32)
 
 
@@ -319,6 +412,9 @@ def _build_augmented_training_dataset(
 
 def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str], None]] = None, progress_fn=None, stop_event=None) -> dict:
     """訓練 XGBoost，並回傳由 training_api 正規化的輸出資料。"""
+    if config.xgboost_feature_set.strip().lower() == "fatigue12":
+        from training_fatigue import training_run_fatigue
+        return training_run_fatigue(config, log_fn, progress_fn, stop_event)
     log = log_fn or print
     training_raise_if_cancelled(stop_event)
     channels = list(config.ch_list)
@@ -338,6 +434,16 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
             f"XGBoost negative delta mode must be one of {sorted(XGBOOST_NEGATIVE_DELTA_MODES)}."
         )
     feature_set = config.xgboost_feature_set.strip().lower()
+    if feature_set == "sync47":
+        if channels != [1,2,3,4,5] or signal_mode != "dn":
+            raise ValueError("sync47 requires channels=[1,2,3,4,5] and signal_mode=dn")
+        log(f"[XGBOOST] sync47: short={config.window_len}, history={3*config.window_len}, stride={config.window_step}; short CSVs/shortened augmented copies cannot form a history window.")
+    if feature_set in {"motion75", "onset95"} and config.window_len < 12:
+        raise ValueError(f"{feature_set} requires window_len >= 12")
+    if feature_set in {"onset60", "onset60_v2"} and config.window_len < 8:
+        raise ValueError("onset60 requires window_len >= 8")
+    if feature_set in {"onset95", "onset60", "onset60_v2"} and signal_mode != "dn":
+        raise ValueError(f"{feature_set} requires signal_mode=dn for its activation thresholds")
     if feature_set not in XGBOOST_FEATURE_SETS:
         raise ValueError(f"XGBoost feature set must be one of {sorted(XGBOOST_FEATURE_SETS)}.")
     if feature_set == "time140" and config.window_len < TIME_SEGMENT_COUNT:
@@ -395,10 +501,16 @@ def training_run_xgboost(config: TrainingConfig, log_fn: Optional[Callable[[str]
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     model.save_model(str(model_path))
-    metadata_path.write_text(json.dumps({"labels": labels, "channels": channels, "window_len": config.window_len, "stride": config.window_step, "signal_mode": signal_mode, "negative_delta_mode": negative_delta_mode, "feature_set": feature_set, "features_per_channel": XGBOOST_FEATURE_SETS[feature_set], "feature_names": make_feature_names(channels, feature_set)}, ensure_ascii=False, indent=2), encoding="utf-8")
+    feature_names = make_feature_names(channels, feature_set)
+    metadata_path.write_text(json.dumps({"labels": labels, "channels": channels, "window_len": config.window_len, "history_len": config.window_len * 3 if feature_set == "sync47" else config.window_len, "stride": config.window_step, "signal_mode": signal_mode, "negative_delta_mode": negative_delta_mode, "feature_set": feature_set, "features_per_channel": XGBOOST_FEATURE_SETS[feature_set], "feature_count": len(feature_names), "feature_names": feature_names}, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"[XGBOOST] Signal mode: {signal_mode}")
     log(f"[XGBOOST] Negative delta mode: {negative_delta_mode}")
-    log(f"[XGBOOST] Feature set: {feature_set} ({XGBOOST_FEATURE_SETS[feature_set] * len(channels)} features)")
+    log(f"[XGBOOST] Feature set: {feature_set} ({len(feature_names)} features)")
+    importances = model.feature_importances_
+    top_indices = np.argsort(importances)[::-1][:min(15, len(importances))]
+    log("[XGBOOST] Top feature importances:")
+    for rank, feature_index in enumerate(top_indices, start=1):
+        log(f"[XGBOOST]   {rank:02d}. {feature_names[feature_index]} = {importances[feature_index]:.5f}")
     log(f"[XGBOOST] Window accuracy: {accuracy:.2%}")
     log(f"[XGBOOST] Model saved: {model_path}")
     log(f"[XGBOOST] Labels saved: {metadata_path}")

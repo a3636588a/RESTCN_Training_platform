@@ -45,8 +45,16 @@ class TrainingConfig:
     xgboost_signal_mode: str = "dn"
     # 手勢差值不應為負時，將 ROW - MOVBASE 的負值截斷為 0。
     xgboost_negative_delta_mode: str = "clip_zero"
-    # stats40 僅保留統計摘要；time140 保留分段摘要；wave215 保留降採樣波形。
-    xgboost_feature_set: str = "wave215"
+    # stats40 僅保留統計摘要；time140 保留分段摘要；wave215 保留各通道波形；
+    # hybrid225 同時保留靜態統計、通道波形與跨通道動態關係。
+    xgboost_feature_set: str = "hybrid225"
+    # fatigue12: CH1 raw 壓力；ZIP 為獨立錄製批次，未指定則讀 data_dir CSV。
+    fatigue_zip_paths: Optional[List[str]] = None
+    fatigue_class_mode: str = "binary"
+    fatigue_sample_rate_hz: float = 100.0
+    fatigue_smooth_samples: int = 5
+    fatigue_peak_prominence_fraction: float = 0.10
+    fatigue_peak_distance_s: float = 0.10
 
     output_model_path: str = "gesture_model_cnn_v1.h5"
     output_metadata_path: str = "gesture_model_meta_cnn_v1.pkl"
@@ -106,8 +114,8 @@ class TrainingConfig:
             "window_len": 50,
             "window_step": 3,
             "test_size": 0.30,
-            "output_model_path": "gesture_xgboost_wave215.json",
-            "output_metadata_path": "gesture_xgboost_wave215_labels.json",
+            "output_model_path": "gesture_xgboost_hybrid225.json",
+            "output_metadata_path": "gesture_xgboost_hybrid225_labels.json",
             "xgboost_n_estimators": 300,
             "xgboost_max_depth": 5,
             "xgboost_learning_rate": 0.05,
@@ -118,9 +126,30 @@ class TrainingConfig:
             "xgboost_log_interval": 5,
             "xgboost_signal_mode": "dn",
             "xgboost_negative_delta_mode": "clip_zero",
-            "xgboost_feature_set": "wave215",
+            "xgboost_feature_set": "hybrid225",
         }
         values.update(overrides)
+        return cls(**values)
+
+    @classmethod
+    def xgboost_fatigue_defaults(cls, **overrides) -> "TrainingConfig":
+        """CH1 fatigue12；預設二分類，可指定 fatigue_class_mode='three_class'。"""
+        values = dict(
+            channels=[1], window_len=160, window_step=20, test_size=0.67,
+            label_defs=[{"id": 0, "prefix": "normal", "name": "normal"},
+                        {"id": 1, "prefix": "fatigue", "name": "fatigue"}],
+            xgboost_feature_set="fatigue12", xgboost_signal_mode="raw",
+            xgboost_negative_delta_mode="allow", enable_augmentation=False,
+            xgboost_n_estimators=120, xgboost_max_depth=2,
+            xgboost_learning_rate=0.05, xgboost_subsample=0.8,
+            xgboost_colsample_bytree=0.9, xgboost_min_child_weight=2.0,
+            xgboost_reg_lambda=5.0, xgboost_log_interval=5,
+            output_model_path="fatigue_model.json", output_metadata_path="fatigue_meta.json",
+        )
+        values.update(overrides)
+        if values.get("fatigue_class_mode") == "three_class" and "label_defs" not in overrides:
+            values["label_defs"] = [{"id": i, "prefix": label, "name": label}
+                                    for i, label in enumerate(("normal", "early_fatigue", "fatigue"))]
         return cls(**values)
 
 

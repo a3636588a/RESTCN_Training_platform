@@ -106,4 +106,12 @@ def detection_validate_config(config: Any, source: str = "serial") -> Tuple[Dete
                 message="GAIN_CLAMP min must be < max",
             ))
 
+    if bool(getattr(config, "use_manual_baseline", False)):
+        manual_baseline = getattr(config, "manual_baseline", None)
+        if not isinstance(manual_baseline, dict) or not manual_baseline:
+            issues.append(DetectionConfigIssue(
+                code="manual_baseline_empty",
+                message="Manual BASELINE is enabled but no channel values were provided",
+            ))
+
     return tuple(issues)
