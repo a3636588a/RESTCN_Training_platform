@@ -57,6 +57,25 @@ hidden_imports += collect_submodules('joblib')
 # Collect data files for rich separately
 rich_datas = collect_data_files('rich')
 
+# PySide6 6.10 ships with a newer MSVC runtime than the Python installation.
+# Keep one matching runtime set at the bundle root; otherwise Windows can load
+# Python's older DLLs first and QtCore fails with WinError 127.
+import PySide6
+qt_runtime_dir = os.path.dirname(PySide6.__file__)
+qt_runtime_names = {
+    'concrt140.dll',
+    'msvcp140.dll',
+    'msvcp140_1.dll',
+    'msvcp140_2.dll',
+    'msvcp140_codecvt_ids.dll',
+    'vcruntime140.dll',
+    'vcruntime140_1.dll',
+}
+# The Codex shell PATH contains Poppler's ICU 78. Qt6Core on Windows links to
+# the system ICU API instead, so bundling Poppler's same-named DLL causes a
+# procedure-not-found failure before the UI can start.
+incompatible_icu_names = {'icuuc.dll', 'icudt78.dll'}
+
 a = Analysis(
     scripts,
     pathex=[],
@@ -72,6 +91,17 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# Analysis also discovers runtime copies from Python and ML packages. Replace
+# every plain-name copy with PySide6's coherent set to avoid mixed versions.
+a.binaries = [
+    entry for entry in a.binaries
+    if os.path.basename(entry[0]).lower() not in qt_runtime_names | incompatible_icu_names
+]
+a.binaries += [
+    (name, os.path.join(qt_runtime_dir, name), 'BINARY')
+    for name in sorted(qt_runtime_names)
+]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
