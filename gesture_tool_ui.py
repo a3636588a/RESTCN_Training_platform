@@ -2171,8 +2171,6 @@ class MainWindow(QMainWindow):
         self.lbl_dynamic_result.setFont(font)
         v_dyn.addWidget(self.lbl_dynamic_result)
         layout.addWidget(g_dynamic_result)
-        # Dynamic Gesture output 邏輯仍保留，簡化版 Detect UI 不顯示結果區。
-        g_dynamic_result.setVisible(False)
 
         # Dynamic Gestures Config
         g_dynamic_cfg = QGroupBox("Dynamic Gestures Config")
@@ -2204,7 +2202,6 @@ class MainWindow(QMainWindow):
         lbl_alpha = QLabel("Smoothing Alpha:")
         lbl_alpha.setToolTip(self.dsb_detect_alpha.toolTip())
         f_dp.addRow(lbl_alpha, self.dsb_detect_alpha)
-        f_dp.setRowVisible(self.dsb_detect_alpha, False)
 
         self.dsb_detect_margin = NoWheelDoubleSpinBox()
         self.dsb_detect_margin.setRange(0.0, 1.0); self.dsb_detect_margin.setValue(0.45)
@@ -2216,7 +2213,6 @@ class MainWindow(QMainWindow):
         lbl_margin = QLabel("Switching Margin:")
         lbl_margin.setToolTip(self.dsb_detect_margin.toolTip())
         f_dp.addRow(lbl_margin, self.dsb_detect_margin)
-        f_dp.setRowVisible(self.dsb_detect_margin, False)
 
         self.dsb_detect_exit = NoWheelDoubleSpinBox()
         self.dsb_detect_exit.setRange(0.0, 1.0); self.dsb_detect_exit.setValue(0.25)
@@ -2228,7 +2224,6 @@ class MainWindow(QMainWindow):
         lbl_exit = QLabel("Latch Exit Thresh:")
         lbl_exit.setToolTip(self.dsb_detect_exit.toolTip())
         f_dp.addRow(lbl_exit, self.dsb_detect_exit)
-        f_dp.setRowVisible(self.dsb_detect_exit, False)
 
         self.sb_detect_stride = NoWheelSpinBox()
         self.sb_detect_stride.setRange(1, 100); self.sb_detect_stride.setValue(6)
@@ -2247,7 +2242,6 @@ class MainWindow(QMainWindow):
         lbl_slope = QLabel("Slope Factor (斜率放大):")
         lbl_slope.setToolTip(self.dsb_detect_slope.toolTip())
         f_dp.addRow(lbl_slope, self.dsb_detect_slope)
-        f_dp.setRowVisible(self.dsb_detect_slope, False)
 
         # Macro Tier Definition (Independent for Detect)
         self.tbl_detect_tier_base = QTableWidget(3, 3)
@@ -2277,7 +2271,6 @@ class MainWindow(QMainWindow):
         lbl_tier = QLabel("Global Defaults:")
         lbl_tier.setToolTip(self.tbl_detect_tier_base.toolTip())
         f_dp.addRow(lbl_tier, self.tbl_detect_tier_base)
-        f_dp.setRowVisible(self.tbl_detect_tier_base, False)
 
         self.tbl_detect_gestures = QTableWidget(0, 5)
         self.tbl_detect_gestures.setHorizontalHeaderLabels(["ID", "Name", "Tier", "Stable", "Thresh"])
@@ -2290,8 +2283,7 @@ class MainWindow(QMainWindow):
         lbl_ges = QLabel("Gesture Settings:")
         lbl_ges.setToolTip(self.tbl_detect_gestures.toolTip())
         f_dp.addRow(lbl_ges, self.tbl_detect_gestures)
-        # 所有 Gesture 固定使用 Fast tier，表格仍保留供 Config extraction。
-        f_dp.setRowVisible(self.tbl_detect_gestures, False)
+        # 開放調整各手勢的後處理參數，設定由 DetectionConfig extraction 讀取。
 
         layout.addWidget(g_detect_post)
 
@@ -2892,8 +2884,7 @@ class MainWindow(QMainWindow):
                 combo = QComboBox()
                 combo.addItems(["Fast", "Normal", "Strict"])
                 
-                # 簡化版 Detect 預設所有 Gesture 使用 Fast；Tier table 雖隱藏，
-                # 仍透過既有 extraction 將 Fast threshold/stable 設定送入 API。
+                # Detect 預設所有 Gesture 使用 Fast，使用者可由 Tier table 調整。
                 default_tier = "Fast"
                 combo.setCurrentText(default_tier)
                 target_tbl.setCellWidget(i, 2, combo)
